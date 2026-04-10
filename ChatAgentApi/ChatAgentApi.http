@@ -1,0 +1,11 @@
+@ChatAgentApi_HostAddress = http://localhost:5000
+
+GET {{ChatAgentApi_HostAddress}}/todos/
+Accept: application/json
+
+###
+
+GET {{ChatAgentApi_HostAddress}}/todos/1
+Accept: application/json
+
+###

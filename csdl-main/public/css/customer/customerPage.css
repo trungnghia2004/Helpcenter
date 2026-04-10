@@ -1,0 +1,114 @@
+@keyframes float {
+    0% { transform: translateY(0px); }
+    50% { transform: translateY(-10px); }
+    100% { transform: translateY(0px); }
+}
+.float-animation {
+    animation: float 3s ease-in-out infinite;
+}
+.gradient-bg {
+    background: linear-gradient(135deg, #f6d365 0%, #fda085 100%);
+}
+.product-card:hover {
+    transform: translateY(-5px);
+    box-shadow: 0 10px 25px rgba(0, 0, 0, 0.1);
+}
+.nav-link::after {
+    content: '';
+    display: block;
+    width: 0;
+    height: 2px;
+    background: #f6d365;
+    transition: width .3s;
+}
+.nav-link:hover::after {
+    width: 100%;
+}
+.search_content.active{
+    display: block;
+    border-radius: 5px;
+    border-color: black;
+    animation: Zoom linear 0.3s;
+}
+.search_content.active.outZoom{
+    padding: 0;
+    width: 0;
+    border-radius: 0;
+    border: none;
+    animation: outZoom linear 0.3s;
+}
+@keyframes Zoom{
+    from{
+        width: 0;
+    }
+    to{
+        width: 150px;
+    }
+}
+@keyframes outZoom{
+    from{
+        width: 150px;
+    }
+    to{
+        width: 0;
+    }
+}
+.search-box {
+    display: flex;
+    align-items: center;
+    border-bottom: 1px solid #ccc;
+    overflow: hidden;
+    background-color: #fff;
+    padding: 4px 12px;
+    transition: border-color 0.3s;
+}
+.search-box:focus-within {
+    border-color: #007bff;
+}
+.search_content{
+    border: none;
+    outline: none;
+}
+.search-box.active.outZoom{
+    padding: 0;
+    width: 0;
+    border-radius: 0;
+    border: none;
+    animation: outZoom linear 0.3s;
+}
+.drop_down {
+    position: absolute;
+    left: 88%;
+    min-height: 70px;
+    width: 160px;
+    background: white;
+    z-index: 1000;
+    box-shadow: 3px 3px 5px 5px rgba(0,0,0,0.15);
+    transform: translateY(0);
+    transition: transform 0.3s ease-out, opacity 0.3s ease-out, all 0.3s ease;
+}
+
+.drop_downItem {
+    border-bottom: 1px solid black;
+    border-radius: 0;
+    width: 100%;
+}
+
+.drop_downItem:hover {
+    background: #d7d7d7;
+}
+
+.log-out {
+    color: red;
+}
+
+.drop_down.drop_downActive {
+    transform: translateY(-50%);
+    height: 0;
+    box-shadow: none;
+    opacity: 0; /* Để ẩn phần tử */
+    visibility: hidden; /* Để ngăn không cho click vào phần tử ẩn */
+    z-index: -1000;
+    transition: transform 0.3s ease, opacity 0.3s ease,all 0.3s ease;
+
+}
