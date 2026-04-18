@@ -8,7 +8,7 @@ using System.Linq;
 
 namespace ChatAgentApi;
 
-public partial class Program
+internal static partial class ChatCore
 {
     static bool IsRateLimitError(Exception ex)
     {
@@ -41,4 +41,6 @@ public partial class Program
         return "Dịch vụ AI đang tạm thời không khả dụng. Bạn vui lòng thử lại sau ít phút.";
     }
 }
+
+
 

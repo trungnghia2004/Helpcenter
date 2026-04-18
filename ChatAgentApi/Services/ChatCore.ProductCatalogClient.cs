@@ -8,7 +8,7 @@ using System.Linq;
 
 namespace ChatAgentApi;
 
-public partial class Program
+internal static partial class ChatCore
 {
     static async Task<JsonElement?> GetProductByCodeAsync(HttpClient http, string baseUrl, string code, CancellationToken ct)
     {
@@ -245,3 +245,5 @@ public partial class Program
         return fresh;
     }
 }
+
+

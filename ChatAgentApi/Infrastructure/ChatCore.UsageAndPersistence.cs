@@ -8,23 +8,11 @@ using System.Linq;
 
 namespace ChatAgentApi;
 
-public partial class Program
+internal static partial class ChatCore
 {
     sealed record OpenAiUsage(int PromptTokens, int CompletionTokens, int TotalTokens);
-    sealed class TokenUsageLog
-    {
-        public DateTime AtUtc { get; set; }
-        public string ConversationId { get; set; } = "";
-        public string UserKey { get; set; } = "";
-        public string Model { get; set; } = "";
-        public int PromptTokens { get; set; }
-        public int CompletionTokens { get; set; }
-        public int TotalTokens { get; set; }
-        public long LatencyMs { get; set; }
-        public string? Note { get; set; }
-    }
 
-    static int ParseIntEnv(string key, int fallback, int min, int max)
+    internal static int ParseIntEnv(string key, int fallback, int min, int max)
     {
         var raw = Environment.GetEnvironmentVariable(key);
         if (!int.TryParse(raw, out var value)) return fallback;
@@ -93,7 +81,7 @@ public partial class Program
         }
     }
 
-    static void LoadDailyTokenUsage(string usagePath)
+    internal static void LoadDailyTokenUsage(string usagePath)
     {
         lock (UsageFileLock)
         {
@@ -103,7 +91,9 @@ public partial class Program
             try
             {
                 var json = File.ReadAllText(usagePath);
-                var data = JsonSerializer.Deserialize<Dictionary<string, long>>(json);
+                var data = JsonSerializer.Deserialize(
+                    json,
+                    AppJsonContext.Default.DictionaryStringInt64);
                 if (data is null) return;
                 foreach (var kv in data)
                     DailyTokenUsage[kv.Key] = kv.Value;
@@ -118,7 +108,9 @@ public partial class Program
     static void PersistDailyTokenUsage(string usagePath)
     {
         var tempPath = usagePath + ".tmp";
-        var json = JsonSerializer.Serialize(DailyTokenUsage);
+        var json = JsonSerializer.Serialize(
+            DailyTokenUsage,
+            AppJsonContext.Default.DictionaryStringInt64);
         File.WriteAllText(tempPath, json);
         File.Move(tempPath, usagePath, overwrite: true);
     }
@@ -136,7 +128,7 @@ public partial class Program
         }
     }
 
-    static ConcurrentDictionary<string, Conversation> LoadConversations(string path)
+    internal static ConcurrentDictionary<string, Conversation> LoadConversations(string path)
     {
         var map = new ConcurrentDictionary<string, Conversation>();
         if (!File.Exists(path)) return map;
@@ -144,7 +136,9 @@ public partial class Program
         try
         {
             var json = File.ReadAllText(path);
-            var list = JsonSerializer.Deserialize<List<Conversation>>(json) ?? new();
+            var list = JsonSerializer.Deserialize(
+                json,
+                AppJsonContext.Default.ListConversation) ?? new();
             foreach (var conv in list)
             {
                 if (string.IsNullOrWhiteSpace(conv.Id)) continue;
@@ -168,7 +162,9 @@ public partial class Program
                     .OrderByDescending(c => c.UpdatedAtUtc ?? c.CreatedAtUtc)
                     .Take(2000)
                     .ToList();
-                var json = JsonSerializer.Serialize(list);
+                var json = JsonSerializer.Serialize(
+                    list,
+                    AppJsonContext.Default.ListConversation);
                 var tempPath = path + ".tmp";
                 File.WriteAllText(tempPath, json);
                 File.Move(tempPath, path, overwrite: true);
@@ -181,7 +177,9 @@ public partial class Program
     {
         try
         {
-            var line = JsonSerializer.Serialize(log);
+            var line = JsonSerializer.Serialize(
+                log,
+                AppJsonContext.Default.TokenUsageLog);
             lock (UsageFileLock)
             {
                 File.AppendAllText(logPath, line + Environment.NewLine);
@@ -190,4 +188,6 @@ public partial class Program
         catch { }
     }
 }
+
+
 

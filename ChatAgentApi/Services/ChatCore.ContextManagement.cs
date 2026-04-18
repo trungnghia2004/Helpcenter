@@ -8,7 +8,7 @@ using System.Linq;
 
 namespace ChatAgentApi;
 
-public partial class Program
+internal static partial class ChatCore
 {
     static async Task UpdateConversationSummaryAsync(
         Conversation conv,
@@ -260,4 +260,6 @@ public partial class Program
         return Task.CompletedTask;
     }
 }
+
+
 

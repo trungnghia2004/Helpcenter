@@ -8,7 +8,7 @@ using System.Linq;
 
 namespace ChatAgentApi;
 
-public partial class Program
+internal static partial class ChatCore
 {
     static async Task<ChatRequest> ParseIncomingChatRequestAsync(HttpRequest request, CancellationToken ct)
     {
@@ -107,4 +107,6 @@ public partial class Program
         }
     }
 }
+
+
 

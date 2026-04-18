@@ -8,7 +8,7 @@ using System.Linq;
 
 namespace ChatAgentApi;
 
-public partial class Program
+internal static partial class ChatCore
 {
     static int EstimateTokenCount(string text)
     {
@@ -38,4 +38,6 @@ public partial class Program
         return string.Join("\n", cleaned).Trim();
     }
 }
+
+
 

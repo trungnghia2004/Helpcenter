@@ -8,9 +8,9 @@ using System.Linq;
 
 namespace ChatAgentApi;
 
-public partial class Program
+internal static partial class ChatCore
 {
-    static class KnowledgeIndexer
+    internal static class KnowledgeIndexer
     {
         public static async Task BuildIndexJsonl(
             HttpClient http,
@@ -128,7 +128,7 @@ public partial class Program
         }
     }
 
-    sealed class KnowledgeChunk
+    internal sealed class KnowledgeChunk
     {
         public required string Id { get; init; }
         public required string Source { get; init; }
@@ -136,7 +136,7 @@ public partial class Program
         public required float[] Vector { get; init; }
     }
 
-    sealed class KnowledgeBase
+    internal sealed class KnowledgeBase
     {
         public List<KnowledgeChunk> Chunks { get; } = new();
 
@@ -249,4 +249,6 @@ public partial class Program
         }
     }
 }
+
+
 

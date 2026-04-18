@@ -19,3 +19,16 @@ public sealed class Conversation
     public DateTime CreatedAtUtc { get; set; }
     public DateTime? UpdatedAtUtc { get; set; }
 }
+
+public sealed class TokenUsageLog
+{
+    public DateTime AtUtc { get; set; }
+    public string ConversationId { get; set; } = "";
+    public string UserKey { get; set; } = "";
+    public string Model { get; set; } = "";
+    public int PromptTokens { get; set; }
+    public int CompletionTokens { get; set; }
+    public int TotalTokens { get; set; }
+    public long LatencyMs { get; set; }
+    public string? Note { get; set; }
+}

@@ -8,7 +8,7 @@ using System.Linq;
 
 namespace ChatAgentApi;
 
-public partial class Program
+internal static partial class ChatCore
 {
     static void SetSseHeaders(HttpContext ctx)
     {
@@ -49,4 +49,6 @@ public partial class Program
         await ctx.Response.Body.FlushAsync();
     }
 }
+
+
 

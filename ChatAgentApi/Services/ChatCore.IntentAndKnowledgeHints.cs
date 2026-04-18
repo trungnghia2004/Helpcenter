@@ -8,7 +8,7 @@ using System.Linq;
 
 namespace ChatAgentApi;
 
-public partial class Program
+internal static partial class ChatCore
 {
     static string? TryGetLocalKnowledgeAnswer(string query, string knowledgeDir)
     {
@@ -272,3 +272,5 @@ public partial class Program
         return null;
     }
 }
+
+
