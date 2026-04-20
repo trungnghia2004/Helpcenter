@@ -34,8 +34,7 @@ internal static partial class ChatCore
 
         if (!string.IsNullOrWhiteSpace(live))
         {
-            return CleanUserFacingLiveText(live) +
-                   "\nDịch vụ AI đang tạm thời không khả dụng. Bạn có thể tiếp tục hỏi theo mã sản phẩm để mình tra nhanh giúp bạn.";
+            return CleanUserFacingLiveText(live);
         }
 
         return "Dịch vụ AI đang tạm thời không khả dụng. Bạn vui lòng thử lại sau ít phút.";

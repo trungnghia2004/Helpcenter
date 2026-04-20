@@ -9,5 +9,8 @@ namespace ChatAgentApi;
 [JsonSerializable(typeof(List<Conversation>))]
 [JsonSerializable(typeof(Dictionary<string, string>))]
 [JsonSerializable(typeof(Dictionary<string, long>))]
+[JsonSerializable(typeof(UserMemoryRecord))]
+[JsonSerializable(typeof(Dictionary<string, UserMemoryRecord>))]
 [JsonSerializable(typeof(TokenUsageLog))]
+[JsonSerializable(typeof(AgentToolCallLog))]
 public partial class AppJsonContext : JsonSerializerContext { }

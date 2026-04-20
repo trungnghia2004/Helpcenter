@@ -241,14 +241,6 @@ internal static partial class ChatCore
             RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
     }
 
-    static bool IsGreetingIntent(string q)
-    {
-        if (string.IsNullOrWhiteSpace(q)) return false;
-        var plain = RemoveDiacritics(q.Trim().ToLowerInvariant());
-        string[] greetings = { "hello", "hi", "xin chao", "chao", "helo", "alo" };
-        return greetings.Contains(plain);
-    }
-
     static string? ExtractProductCode(string q)
     {
         if (string.IsNullOrWhiteSpace(q)) return null;

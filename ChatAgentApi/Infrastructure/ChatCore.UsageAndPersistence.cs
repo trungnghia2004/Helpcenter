@@ -10,7 +10,7 @@ namespace ChatAgentApi;
 
 internal static partial class ChatCore
 {
-    sealed record OpenAiUsage(int PromptTokens, int CompletionTokens, int TotalTokens);
+    internal sealed record OpenAiUsage(int PromptTokens, int CompletionTokens, int TotalTokens);
 
     internal static int ParseIntEnv(string key, int fallback, int min, int max)
     {
@@ -77,7 +77,13 @@ internal static partial class ChatCore
             DailyTokenUsage.TryGetValue(usageKey, out var cur);
             DailyTokenUsage[usageKey] = cur + tokens;
             TrimOldDailyUsage(DateOnly.FromDateTime(DateTime.UtcNow).AddDays(-14));
-            PersistDailyTokenUsage(usagePath);
+            try
+            {
+                PersistDailyTokenUsage(usagePath);
+            }
+            catch
+            {
+            }
         }
     }
 
@@ -111,8 +117,22 @@ internal static partial class ChatCore
         var json = JsonSerializer.Serialize(
             DailyTokenUsage,
             AppJsonContext.Default.DictionaryStringInt64);
-        File.WriteAllText(tempPath, json);
-        File.Move(tempPath, usagePath, overwrite: true);
+
+        try
+        {
+            File.WriteAllText(tempPath, json);
+            File.Move(tempPath, usagePath, overwrite: true);
+        }
+        catch
+        {
+            try
+            {
+                File.WriteAllText(usagePath, json);
+            }
+            catch
+            {
+            }
+        }
     }
 
     static void TrimOldDailyUsage(DateOnly minDay)
@@ -180,6 +200,21 @@ internal static partial class ChatCore
             var line = JsonSerializer.Serialize(
                 log,
                 AppJsonContext.Default.TokenUsageLog);
+            lock (UsageFileLock)
+            {
+                File.AppendAllText(logPath, line + Environment.NewLine);
+            }
+        }
+        catch { }
+    }
+
+    static void AppendAgentToolCallLog(string logPath, AgentToolCallLog log)
+    {
+        try
+        {
+            var line = JsonSerializer.Serialize(
+                log,
+                AppJsonContext.Default.AgentToolCallLog);
             lock (UsageFileLock)
             {
                 File.AppendAllText(logPath, line + Environment.NewLine);

@@ -16,12 +16,15 @@ internal static partial class ChatCore
         KnowledgeBase kb,
         string conversationsPath,
         string dailyUsagePath,
+        string userMemoriesPath,
         string usageLogPath,
+        string agentToolLogPath,
         string knowledgeDir,
         string laravelBase,
         string openAiApiKey,
         string openAiModel,
         string openAiEmbedModel,
+        AgentRunPolicy agentPolicy,
         int rateLimitPerMinute,
         int dailyTokenQuota)
     {
@@ -31,12 +34,15 @@ internal static partial class ChatCore
             kb: kb,
             conversationsPath: conversationsPath,
             dailyUsagePath: dailyUsagePath,
+            userMemoriesPath: userMemoriesPath,
             usageLogPath: usageLogPath,
+            agentToolLogPath: agentToolLogPath,
             knowledgeDir: knowledgeDir,
             laravelBase: laravelBase,
             openAiApiKey: openAiApiKey,
             openAiModel: openAiModel,
             openAiEmbedModel: openAiEmbedModel,
+            agentPolicy: agentPolicy,
             rateLimitPerMinute: rateLimitPerMinute,
             dailyTokenQuota: dailyTokenQuota
         ));
@@ -81,12 +87,15 @@ internal static partial class ChatCore
         KnowledgeBase kb,
         string conversationsPath,
         string dailyUsagePath,
+        string userMemoriesPath,
         string usageLogPath,
+        string agentToolLogPath,
         string knowledgeDir,
         string laravelBase,
         string openAiApiKey,
         string openAiModel,
         string openAiEmbedModel,
+        AgentRunPolicy agentPolicy,
         int rateLimitPerMinute,
         int dailyTokenQuota)
     {
@@ -190,82 +199,23 @@ internal static partial class ChatCore
         }
 
         var lastUser = conv.Messages.LastOrDefault(m => m.Role == "user")?.Content?.Trim() ?? "";
-
-        if (IsGreetingIntent(lastUser))
-        {
-            var messageIdGreet = "m_" + Guid.NewGuid().ToString("N");
-            var textIdGreet = "t_" + Guid.NewGuid().ToString("N");
-            var greeting = "Chào bạn! Mình là trợ lý Help Center của cửa hàng. Bạn cần mình hỗ trợ thông tin gì?";
-
-            await SendStart(ctx, messageIdGreet);
-            await SendTextStart(ctx, textIdGreet);
-            await SendTextDelta(ctx, textIdGreet, greeting);
-            await SendTextEnd(ctx, textIdGreet);
-            await SendDone(ctx);
-
-            conv.Messages.Add(new ChatMessage("assistant", greeting));
-            conv.UpdatedAtUtc = DateTime.UtcNow;
-            PersistConversations(conversationsPath, conversations);
-            AppendTokenUsageLog(
-                usageLogPath,
-                new TokenUsageLog
-                {
-                    AtUtc = DateTime.UtcNow,
-                    ConversationId = conversationId,
-                    UserKey = requesterKey,
-                    Model = "deterministic:greeting",
-                    PromptTokens = 0,
-                    CompletionTokens = EstimateTokenCount(greeting),
-                    TotalTokens = EstimateTokenCount(greeting),
-                    LatencyMs = (long)(DateTime.UtcNow - requestStarted).TotalMilliseconds
-                });
-            return;
-        }
-
         var localKnowledgeFast = TryGetLocalKnowledgeAnswer(lastUser, knowledgeDir);
-        if (!string.IsNullOrWhiteSpace(localKnowledgeFast))
+
+        try
         {
-            var plainLastUser = RemoveDiacritics(lastUser.ToLowerInvariant());
-            var asksSizeGuide =
-                plainLastUser.Contains("bang size", StringComparison.Ordinal) ||
-                plainLastUser.Contains("size guide", StringComparison.Ordinal) ||
-                plainLastUser.Contains("kich co", StringComparison.Ordinal);
-            var asksVariantSpecific = IsVariantIntent(lastUser) && !asksSizeGuide;
-            var hasProductCode = ExtractProductCode(lastUser) is not null;
-
-            if (!hasProductCode && !asksVariantSpecific)
-            {
-                var messageIdLocal = "m_" + Guid.NewGuid().ToString("N");
-                var textIdLocal = "t_" + Guid.NewGuid().ToString("N");
-
-                await SendStart(ctx, messageIdLocal);
-                await SendTextStart(ctx, textIdLocal);
-                await SendTextDelta(ctx, textIdLocal, localKnowledgeFast!);
-                await SendTextEnd(ctx, textIdLocal);
-                await SendDone(ctx);
-
-                conv.Messages.Add(new ChatMessage("assistant", localKnowledgeFast!));
-                conv.UpdatedAtUtc = DateTime.UtcNow;
-                PersistConversations(conversationsPath, conversations);
-                AppendTokenUsageLog(
-                    usageLogPath,
-                    new TokenUsageLog
-                    {
-                        AtUtc = DateTime.UtcNow,
-                        ConversationId = conversationId,
-                        UserKey = requesterKey,
-                        Model = "deterministic:knowledge-local",
-                        PromptTokens = 0,
-                        CompletionTokens = EstimateTokenCount(localKnowledgeFast!),
-                        TotalTokens = EstimateTokenCount(localKnowledgeFast!),
-                        LatencyMs = (long)(DateTime.UtcNow - requestStarted).TotalMilliseconds
-                    });
-                return;
-            }
+            await UpdateConversationSummaryAsync(conv, openAiHttp, openAiApiKey, openAiModel, ctx.RequestAborted);
+        }
+        catch
+        {
         }
 
-        await UpdateConversationSummaryAsync(conv, openAiHttp, openAiApiKey, openAiModel, ctx.RequestAborted);
-        await UpdateConversationMemoryAsync(conv, openAiHttp, openAiApiKey, ctx.RequestAborted);
+        try
+        {
+            await UpdateConversationMemoryAsync(conv, openAiHttp, openAiApiKey, ctx.RequestAborted);
+        }
+        catch
+        {
+        }
 
         var sourcesBlocks = new List<string>();
 
@@ -376,152 +326,22 @@ internal static partial class ChatCore
             }
         }
 
+        if (!string.IsNullOrWhiteSpace(localKnowledgeFast))
+            sourcesBlocks.Add(localKnowledgeFast!);
+
+        var userProfileMemory = BuildUserMemoryForPrompt(requesterKey, maxFacts: 10);
+        var mergedMemory = conv.Memory;
+        if (!string.IsNullOrWhiteSpace(userProfileMemory))
+        {
+            mergedMemory = string.IsNullOrWhiteSpace(mergedMemory)
+                ? userProfileMemory
+                : $"{mergedMemory}\n{userProfileMemory}";
+        }
+
         if (sourcesBlocks.Count == 0)
         {
-            var messageId0 = "m_" + Guid.NewGuid().ToString("N");
-            var textId0 = "t_" + Guid.NewGuid().ToString("N");
-
-            await SendStart(ctx, messageId0);
-            await SendTextStart(ctx, textId0);
-
-            var codeNotFound = ExtractProductCode(lastUser);
-            var localKnowledge = TryGetLocalKnowledgeAnswer(lastUser, knowledgeDir);
-            var fallback =
-                !string.IsNullOrWhiteSpace(localKnowledge) ? localKnowledge :
-                (!string.IsNullOrWhiteSpace(codeNotFound)
-                    ? $"Mình chưa tìm thấy sản phẩm có mã {codeNotFound} trong dữ liệu cửa hàng. Bạn kiểm tra lại mã giúp mình nhé."
-                    : IsVariantIntent(lastUser)
-                        ? "Mình cần mã sản phẩm để kiểm tra size/màu/tồn kho. Bạn gửi giúp mình mã sản phẩm (VD: AT0006)."
-                        : "Mình không tìm thấy thông tin này trong tài liệu/nguồn dữ liệu cửa hàng.\n" +
-                          "Bạn có thể hỏi về: đổi trả, giao hàng, thanh toán, bảng size, theo dõi đơn, tài khoản, hoặc gửi mã sản phẩm (VD: AT0006)."
-                );
-
-            await SendTextDelta(ctx, textId0, fallback);
-            await SendTextEnd(ctx, textId0);
-            await SendDone(ctx);
-
-            conv.UpdatedAtUtc = DateTime.UtcNow;
-            PersistConversations(conversationsPath, conversations);
-            AppendTokenUsageLog(
-                usageLogPath,
-                new TokenUsageLog
-                {
-                    AtUtc = DateTime.UtcNow,
-                    ConversationId = conversationId,
-                    UserKey = requesterKey,
-                    Model = "deterministic:fallback",
-                    PromptTokens = 0,
-                    CompletionTokens = EstimateTokenCount(fallback),
-                    TotalTokens = EstimateTokenCount(fallback),
-                    LatencyMs = (long)(DateTime.UtcNow - requestStarted).TotalMilliseconds
-                });
-            return;
-        }
-
-        if (!string.IsNullOrWhiteSpace(lastUser) &&
-            Regex.IsMatch(lastUser.Trim(), @"^[A-Za-z]{2}\d{3,5}$"))
-        {
-            var liveOnly = sourcesBlocks.FirstOrDefault(s => s.StartsWith("LIVE PRODUCT DATA:", StringComparison.Ordinal));
-            if (!string.IsNullOrWhiteSpace(liveOnly))
-            {
-                var messageIdCode = "m_" + Guid.NewGuid().ToString("N");
-                var textIdCode = "t_" + Guid.NewGuid().ToString("N");
-                var direct = CleanUserFacingLiveText(liveOnly) + "\nBạn muốn mình kiểm tra thêm size/màu/tồn kho không?";
-
-                await SendStart(ctx, messageIdCode);
-                await SendTextStart(ctx, textIdCode);
-                await SendTextDelta(ctx, textIdCode, direct);
-                await SendTextEnd(ctx, textIdCode);
-                await SendDone(ctx);
-
-                conv.Messages.Add(new ChatMessage("assistant", direct));
-                conv.UpdatedAtUtc = DateTime.UtcNow;
-                PersistConversations(conversationsPath, conversations);
-                AppendTokenUsageLog(
-                    usageLogPath,
-                    new TokenUsageLog
-                    {
-                        AtUtc = DateTime.UtcNow,
-                        ConversationId = conversationId,
-                        UserKey = requesterKey,
-                        Model = "deterministic:code",
-                        PromptTokens = 0,
-                        CompletionTokens = EstimateTokenCount(direct),
-                        TotalTokens = EstimateTokenCount(direct),
-                        LatencyMs = (long)(DateTime.UtcNow - requestStarted).TotalMilliseconds
-                    });
-                return;
-            }
-        }
-
-        if (IsVariantIntent(lastUser))
-        {
-            var liveData = sourcesBlocks.FirstOrDefault(s => s.StartsWith("LIVE PRODUCT DATA:", StringComparison.Ordinal));
-            if (!string.IsNullOrWhiteSpace(liveData))
-            {
-                var messageIdVariant = "m_" + Guid.NewGuid().ToString("N");
-                var textIdVariant = "t_" + Guid.NewGuid().ToString("N");
-                var direct = CleanUserFacingLiveText(liveData);
-
-                await SendStart(ctx, messageIdVariant);
-                await SendTextStart(ctx, textIdVariant);
-                await SendTextDelta(ctx, textIdVariant, direct);
-                await SendTextEnd(ctx, textIdVariant);
-                await SendDone(ctx);
-
-                conv.Messages.Add(new ChatMessage("assistant", direct));
-                conv.UpdatedAtUtc = DateTime.UtcNow;
-                PersistConversations(conversationsPath, conversations);
-                AppendTokenUsageLog(
-                    usageLogPath,
-                    new TokenUsageLog
-                    {
-                        AtUtc = DateTime.UtcNow,
-                        ConversationId = conversationId,
-                        UserKey = requesterKey,
-                        Model = "deterministic:variants",
-                        PromptTokens = 0,
-                        CompletionTokens = EstimateTokenCount(direct),
-                        TotalTokens = EstimateTokenCount(direct),
-                        LatencyMs = (long)(DateTime.UtcNow - requestStarted).TotalMilliseconds
-                    });
-                return;
-            }
-        }
-
-        if (IsBrowseIntent(lastUser) || IsCategoryOnlyIntent(lastUser) || !string.IsNullOrWhiteSpace(ExtractCategoryKeyword(lastUser)))
-        {
-            var liveList = sourcesBlocks.FirstOrDefault(s => s.StartsWith("LIVE PRODUCT LIST:", StringComparison.Ordinal));
-            if (!string.IsNullOrWhiteSpace(liveList))
-            {
-                var messageIdList = "m_" + Guid.NewGuid().ToString("N");
-                var textIdList = "t_" + Guid.NewGuid().ToString("N");
-                var direct = CleanUserFacingLiveText(liveList) + "\nBạn muốn xem chi tiết sản phẩm nào? Hãy gửi mã sản phẩm (VD: AT0006).";
-
-                await SendStart(ctx, messageIdList);
-                await SendTextStart(ctx, textIdList);
-                await SendTextDelta(ctx, textIdList, direct);
-                await SendTextEnd(ctx, textIdList);
-                await SendDone(ctx);
-
-                conv.Messages.Add(new ChatMessage("assistant", direct));
-                conv.UpdatedAtUtc = DateTime.UtcNow;
-                PersistConversations(conversationsPath, conversations);
-                AppendTokenUsageLog(
-                    usageLogPath,
-                    new TokenUsageLog
-                    {
-                        AtUtc = DateTime.UtcNow,
-                        ConversationId = conversationId,
-                        UserKey = requesterKey,
-                        Model = "deterministic:browse",
-                        PromptTokens = 0,
-                        CompletionTokens = EstimateTokenCount(direct),
-                        TotalTokens = EstimateTokenCount(direct),
-                        LatencyMs = (long)(DateTime.UtcNow - requestStarted).TotalMilliseconds
-                    });
-                return;
-            }
+            sourcesBlocks.Add(
+                "NO_PRELOADED_SOURCE: Khong tim thay nguon tien xu ly. Agent bat buoc can nhac goi tool store truoc khi ket luan thieu du lieu.");
         }
 
         var baseRules =
@@ -532,13 +352,14 @@ internal static partial class ChatCore
             "- Không bịa.\n" +
             "- Trả lời ngắn gọn, gạch đầu dòng.\n" +
             "- Nếu thiếu sản phẩm cụ thể khi hỏi size/màu/tồn kho, hỏi lại 1 câu.\n" +
-            "- Chủ động dùng tool của plugin store để tra dữ liệu sản phẩm/knowledge trước khi kết luận không có dữ liệu.\n";
+            "- Chủ động dùng tool của plugin store để tra dữ liệu sản phẩm/knowledge trước khi kết luận không có dữ liệu.\n" +
+            $"- Giới hạn gọi tool tối đa: {Math.Max(1, agentPolicy.MaxToolCalls)} lần cho mỗi lượt trả lời.\n";
 
         var (_, prompt) = BuildPromptWithTokenBudget(
             conv: conv,
             baseRules: baseRules,
             summary: conv.Summary,
-            memory: conv.Memory,
+            memory: mergedMemory,
             sourcesBlocks: sourcesBlocks,
             maxPromptTokens: 7000,
             reserveForAnswerTokens: 800,
@@ -552,10 +373,13 @@ internal static partial class ChatCore
         var promptTokensEstimated = EstimateTokenCount(prompt);
         var chargeTokens = true;
         var usageNote = "";
+        var agentOrchestrator = ctx.RequestServices.GetRequiredService<IAgentOrchestrator>();
+        var runtimeState = new AgentRuntimeState();
         var lastKnownCode = ExtractRecentProductCode(conv);
         if (string.IsNullOrWhiteSpace(lastKnownCode) &&
             LastProductCodeByRequester.TryGetValue(requesterKey, out var rememberedCode))
             lastKnownCode = rememberedCode;
+        Action<AgentToolCallLog> toolLogger = log => AppendAgentToolCallLog(agentToolLogPath, log);
         var agentContext = new AgentExecutionContext(
             OpenAiHttp: openAiHttp,
             LaravelHttp: laravelHttp,
@@ -565,7 +389,11 @@ internal static partial class ChatCore
             OpenAiApiKey: openAiApiKey,
             OpenAiEmbedModel: openAiEmbedModel,
             LastKnownProductCode: lastKnownCode,
-            RequesterKey: requesterKey,
+            ConversationId: conversationId,
+            UserKey: requesterKey,
+            Policy: agentPolicy,
+            RuntimeState: runtimeState,
+            ToolLogger: toolLogger,
             CancellationToken: ctx.RequestAborted
         );
 
@@ -574,14 +402,16 @@ internal static partial class ChatCore
 
         try
         {
-            await foreach (var chunk in OpenAIAgentStream(
-                http: openAiHttp,
-                model: openAiModel,
-                apiKey: openAiApiKey,
-                messages: prompt,
-                agentContext: agentContext,
-                onUsage: u => usage = u,
-                ct: ctx.RequestAborted))
+            var agentRequest = new AgentStreamRequest(
+                Model: openAiModel,
+                ApiKey: openAiApiKey,
+                Messages: prompt,
+                Context: agentContext,
+                OnUsage: u => usage = u,
+                CancellationToken: ctx.RequestAborted
+            );
+
+            await foreach (var chunk in agentOrchestrator.StreamAsync(agentRequest))
             {
                 sb.Append(chunk);
                 await SendTextDelta(ctx, textId, chunk);
@@ -608,6 +438,7 @@ internal static partial class ChatCore
 
         conv.Messages.Add(new ChatMessage("assistant", sb.ToString()));
         conv.UpdatedAtUtc = DateTime.UtcNow;
+        MergeUserMemoryFromConversation(userMemoriesPath, requesterKey, conv);
         PersistConversations(conversationsPath, conversations);
 
         var completionTokens = usage?.CompletionTokens ?? EstimateTokenCount(sb.ToString());
@@ -618,6 +449,14 @@ internal static partial class ChatCore
             promptTokens = 0;
             completionTokens = 0;
             totalTokens = 0;
+        }
+
+        if (runtimeState.ToolCallCount > 0)
+        {
+            var toolCallInfo = $"tool_calls:{runtimeState.ToolCallCount}";
+            usageNote = string.IsNullOrWhiteSpace(usageNote)
+                ? toolCallInfo
+                : $"{usageNote};{toolCallInfo}";
         }
 
         if (totalTokens > 0)

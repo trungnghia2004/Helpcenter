@@ -28,12 +28,6 @@ internal static partial class ChatCore
         return doc.RootElement.Clone();
     }
 
-    static async Task<JsonElement?> SearchFirstProductAsync(HttpClient http, string baseUrl, string q, CancellationToken ct)
-    {
-        var items = await SearchProductsAsync(http, baseUrl, q, ct);
-        return items.Count > 0 ? items[0] : null;
-    }
-
     static async Task<List<JsonElement>> GetProductsByCategoryAsync(HttpClient http, string baseUrl, string categoryKeyword, CancellationToken ct)
     {
         var url = $"{baseUrl}/api/products/by-category?q={Uri.EscapeDataString(categoryKeyword)}";
