@@ -59,6 +59,7 @@ internal static partial class ChatCore
         var plainQ = RemoveDiacritics(q.ToLowerInvariant());
         var keywords = ExtractSearchKeywords(q);
         var strictCategory = ExtractStrictCategoryKeyword(plainQ);
+        var strictColor = ExtractStrictColorKeyword(plainQ);
 
         foreach (var query in BuildSearchQueries(q))
         {
@@ -92,7 +93,7 @@ internal static partial class ChatCore
             .Select(item => new
             {
                 item,
-                score = ScoreProductForQuery(item, plainQ, keywords, strictCategory)
+                score = ScoreProductForQuery(item, plainQ, keywords, strictCategory, strictColor)
             })
             .Where(x => x.score > 0)
             .OrderByDescending(x => x.score)
@@ -182,7 +183,33 @@ internal static partial class ChatCore
         return strict.FirstOrDefault(plainQ.Contains);
     }
 
-    static int ScoreProductForQuery(JsonElement item, string plainQ, HashSet<string> keywords, string? strictCategory)
+    static string? ExtractStrictColorKeyword(string plainQ)
+    {
+        var colorAliases = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["trang"] = "trang",
+            ["den"] = "den",
+            ["do"] = "do",
+            ["hong"] = "hong",
+            ["vang"] = "vang",
+            ["xanh nuoc"] = "xanh nuoc",
+            ["xanh"] = "xanh",
+            ["nau"] = "nau",
+            ["xam"] = "xam",
+            ["reu"] = "reu",
+            ["be"] = "be"
+        };
+
+        foreach (var kv in colorAliases)
+        {
+            if (Regex.IsMatch(plainQ, $@"\b{Regex.Escape(kv.Key)}\b"))
+                return kv.Value;
+        }
+
+        return null;
+    }
+
+    static int ScoreProductForQuery(JsonElement item, string plainQ, HashSet<string> keywords, string? strictCategory, string? strictColor)
     {
         var name = item.TryGetProperty("productName", out var n) ? (n.GetString() ?? string.Empty) : string.Empty;
         var category = item.TryGetProperty("categoryName", out var cat) ? (cat.GetString() ?? string.Empty) : string.Empty;
@@ -193,6 +220,8 @@ internal static partial class ChatCore
         var score = 0;
 
         if (!string.IsNullOrWhiteSpace(strictCategory) && !combined.Contains(strictCategory))
+            return 0;
+        if (!string.IsNullOrWhiteSpace(strictColor) && !combined.Contains(strictColor))
             return 0;
 
         foreach (var kw in keywords)

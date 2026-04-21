@@ -1,7 +1,7 @@
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.SemanticKernel;
-using Microsoft.SemanticKernel.ChatCompletion;
-using Microsoft.SemanticKernel.Connectors.OpenAI;
+using System.Net.Http.Headers;
+using System.Text;
+using System.Text.Json;
+using System.Text.RegularExpressions;
 
 namespace ChatAgentApi;
 
@@ -10,11 +10,6 @@ internal static partial class ChatCore
     internal interface IAgentOrchestrator
     {
         IAsyncEnumerable<string> StreamAsync(AgentStreamRequest request);
-    }
-
-    internal interface IAgentPluginFactory
-    {
-        void ImportStorePlugin(Kernel kernel, AgentExecutionContext context);
     }
 
     internal sealed record AgentStreamRequest(
@@ -37,9 +32,12 @@ internal static partial class ChatCore
         string? LastKnownProductCode,
         string ConversationId,
         string UserKey,
+        string TraceId,
         AgentRunPolicy Policy,
         AgentRuntimeState RuntimeState,
         Action<AgentToolCallLog>? ToolLogger,
+        Action<AgentStepLog>? StepLogger,
+        string? PlannerHint,
         CancellationToken CancellationToken
     );
 
@@ -54,106 +52,501 @@ internal static partial class ChatCore
             => Volatile.Read(ref _toolCallCount);
     }
 
-    internal sealed class SemanticKernelAgentOrchestrator : IAgentOrchestrator
-    {
-        readonly IAgentPluginFactory _pluginFactory;
+    internal sealed record ToolCallOutputInput(string CallId, string Output);
 
-        public SemanticKernelAgentOrchestrator(IAgentPluginFactory pluginFactory)
-        {
-            _pluginFactory = pluginFactory;
-        }
+    internal sealed class OpenAiResponsesAgentOrchestrator : IAgentOrchestrator
+    {
+        const int MaxReasoningSteps = 8;
 
         public async IAsyncEnumerable<string> StreamAsync(AgentStreamRequest request)
         {
-            _ = request.OnUsage;
-
             if (string.IsNullOrWhiteSpace(request.ApiKey))
                 throw new InvalidOperationException("Missing OPENAI_API_KEY environment variable.");
 
-            var kernelBuilder = Kernel.CreateBuilder();
-            kernelBuilder.AddOpenAIChatCompletion(modelId: request.Model, apiKey: request.ApiKey);
-            var kernel = kernelBuilder.Build();
+            var plugin = new StoreAgentPlugin(request.Context);
+            var toolOutputsInput = (List<ToolCallOutputInput>?)null;
+            string? previousResponseId = null;
+            var promptTokens = 0;
+            var completionTokens = 0;
+            var totalTokens = 0;
+            var finalText = string.Empty;
+            var plannerHint = string.IsNullOrWhiteSpace(request.Context.PlannerHint)
+                ? BuildPlannerHintFromMessages(request.Messages)
+                : request.Context.PlannerHint!;
 
-            _pluginFactory.ImportStorePlugin(kernel, request.Context);
+            LogStep(
+                request.Context,
+                stepNo: 0,
+                phase: "plan",
+                detail: plannerHint);
 
-            var chatService = kernel.Services.GetRequiredService<IChatCompletionService>();
-            var history = new ChatHistory();
-
-            foreach (var m in request.Messages)
+            for (var step = 0; step < MaxReasoningSteps; step++)
             {
-                var role = (m.Role ?? string.Empty).Trim().ToLowerInvariant();
-                var content = m.Content ?? string.Empty;
-                if (string.IsNullOrWhiteSpace(content)) continue;
+                var stepNo = step + 1;
+                var started = DateTime.UtcNow;
+                var payload = BuildResponsesPayload(
+                    model: request.Model,
+                    messages: request.Messages,
+                    previousResponseId: previousResponseId,
+                    toolOutputsInput: toolOutputsInput,
+                    plannerHint: plannerHint);
 
-                switch (role)
+                LogStep(
+                    request.Context,
+                    stepNo: stepNo,
+                    phase: "model_request",
+                    detail: $"response_call previous_response_id={previousResponseId ?? "null"}");
+
+                using var httpReq = new HttpRequestMessage(HttpMethod.Post, "https://api.openai.com/v1/responses");
+                httpReq.Headers.Authorization = new AuthenticationHeaderValue("Bearer", request.ApiKey);
+                httpReq.Content = new StringContent(payload, Encoding.UTF8, "application/json");
+
+                using var resp = await request.Context.OpenAiHttp.SendAsync(httpReq, request.CancellationToken);
+                var body = await resp.Content.ReadAsStringAsync(request.CancellationToken);
+                if (!resp.IsSuccessStatusCode)
                 {
-                    case "system":
-                        history.AddSystemMessage(content);
-                        break;
-                    case "assistant":
-                        history.AddAssistantMessage(content);
-                        break;
-                    default:
-                        history.AddUserMessage(content);
-                        break;
+                    var status = (int)resp.StatusCode;
+                    throw new HttpRequestException($"Response status code does not indicate success: {status} ({resp.ReasonPhrase}).");
+                }
+
+                using var doc = JsonDocument.Parse(body);
+                var root = doc.RootElement;
+
+                if (root.TryGetProperty("id", out var idEl) && idEl.ValueKind == JsonValueKind.String)
+                    previousResponseId = idEl.GetString();
+
+                ReadUsage(root, ref promptTokens, ref completionTokens, ref totalTokens);
+
+                var functionCalls = ExtractFunctionCalls(root);
+                if (functionCalls.Count == 0)
+                {
+                    finalText = ExtractOutputText(root);
+                    LogStep(
+                        request.Context,
+                        stepNo: stepNo,
+                        phase: "model_answer",
+                        detail: $"final_text_chars={finalText.Length}",
+                        responseId: previousResponseId,
+                        succeeded: true,
+                        latencyMs: (long)(DateTime.UtcNow - started).TotalMilliseconds);
+                    break;
+                }
+
+                LogStep(
+                    request.Context,
+                    stepNo: stepNo,
+                    phase: "tool_plan",
+                    detail: $"tool_calls={functionCalls.Count}",
+                    responseId: previousResponseId,
+                    succeeded: true,
+                    latencyMs: (long)(DateTime.UtcNow - started).TotalMilliseconds);
+
+                toolOutputsInput = new List<ToolCallOutputInput>(functionCalls.Count);
+                foreach (var fc in functionCalls)
+                {
+                    var toolStarted = DateTime.UtcNow;
+                    var output = await InvokeToolAsync(plugin, fc.name, fc.argumentsJson);
+                    toolOutputsInput.Add(new ToolCallOutputInput(fc.callId, output));
+                    var toolSuccess = !output.Contains(" tam thoi loi:", StringComparison.OrdinalIgnoreCase) &&
+                                      !output.StartsWith("Tool ", StringComparison.Ordinal);
+                    LogStep(
+                        request.Context,
+                        stepNo: stepNo,
+                        phase: "tool_result",
+                        detail: $"call_id={fc.callId};output_chars={output.Length}",
+                        responseId: previousResponseId,
+                        toolName: fc.name,
+                        succeeded: toolSuccess,
+                        latencyMs: (long)(DateTime.UtcNow - toolStarted).TotalMilliseconds);
                 }
             }
 
-            var settings = new OpenAIPromptExecutionSettings
-            {
-                Temperature = 0.2,
-                ToolCallBehavior = ToolCallBehavior.AutoInvokeKernelFunctions
-            };
+            if (string.IsNullOrWhiteSpace(finalText))
+                finalText = "Mình không có thêm thông tin để kết luận chắc chắn.";
 
-            await foreach (var part in chatService.GetStreamingChatMessageContentsAsync(
-                               chatHistory: history,
-                               executionSettings: settings,
-                               kernel: kernel,
-                               cancellationToken: request.CancellationToken))
+            finalText = CleanUserFacingLiveText(finalText.Trim());
+            foreach (var chunk in SplitForSse(finalText, 160))
+                yield return chunk;
+
+            LogStep(
+                request.Context,
+                stepNo: MaxReasoningSteps,
+                phase: "final",
+                detail: $"answer_chars={finalText.Length};tool_calls={request.Context.RuntimeState.ToolCallCount}",
+                responseId: previousResponseId,
+                succeeded: true);
+
+            if (request.OnUsage is not null)
             {
-                if (!string.IsNullOrWhiteSpace(part.Content))
-                    yield return part.Content!;
+                if (totalTokens <= 0)
+                    totalTokens = promptTokens + completionTokens;
+                request.OnUsage(new OpenAiUsage(promptTokens, completionTokens, totalTokens));
             }
         }
-    }
 
-    internal sealed class StoreAgentPluginFactory : IAgentPluginFactory
-    {
-        public void ImportStorePlugin(Kernel kernel, AgentExecutionContext context)
+        static string BuildResponsesPayload(
+            string model,
+            List<ChatMessage> messages,
+            string? previousResponseId,
+            List<ToolCallOutputInput>? toolOutputsInput,
+            string plannerHint)
         {
-            var storePlugin = new StoreAgentPlugin(context);
+            using var ms = new MemoryStream();
+            using var writer = new Utf8JsonWriter(ms);
 
-#pragma warning disable IL2026, IL3050
-            var functions = new[]
+            writer.WriteStartObject();
+            writer.WriteString("model", model);
+            writer.WriteNumber("temperature", 0.2);
+            writer.WriteString("tool_choice", "auto");
+            if (!string.IsNullOrWhiteSpace(previousResponseId))
+                writer.WriteString("previous_response_id", previousResponseId);
+
+            writer.WritePropertyName("tools");
+            WriteToolSchemas(writer);
+
+            writer.WritePropertyName("input");
+            if (toolOutputsInput is { Count: > 0 })
+                WriteToolOutputsInput(writer, toolOutputsInput);
+            else
+                WriteInitialInput(writer, messages, plannerHint);
+
+            writer.WriteEndObject();
+            writer.Flush();
+            return Encoding.UTF8.GetString(ms.ToArray());
+        }
+
+        static void WriteInitialInput(Utf8JsonWriter writer, List<ChatMessage> messages, string plannerHint)
+        {
+            writer.WriteStartArray();
+            if (!string.IsNullOrWhiteSpace(plannerHint))
             {
-                KernelFunctionFactory.CreateFromMethod(
-                    method: (Func<string, Task<string>>)storePlugin.SearchProductsAsync,
-                    jsonSerializerOptions: AppJsonContext.Default.Options,
-                    functionName: "search_products",
-                    description: "Tim danh sach san pham theo query, vi du quan short, ao thun, ao gile."),
-                KernelFunctionFactory.CreateFromMethod(
-                    method: (Func<string, Task<string>>)storePlugin.GetProductsByCategoryAsync,
-                    jsonSerializerOptions: AppJsonContext.Default.Options,
-                    functionName: "get_products_by_category",
-                    description: "Lay danh sach san pham theo danh muc, vi du short, jeans, thun, hoodie, gile."),
-                KernelFunctionFactory.CreateFromMethod(
-                    method: (Func<string, Task<string>>)storePlugin.GetProductByCodeAsync,
-                    jsonSerializerOptions: AppJsonContext.Default.Options,
-                    functionName: "get_product_by_code",
-                    description: "Lay thong tin chi tiet san pham theo ma, vi du AT0006."),
-                KernelFunctionFactory.CreateFromMethod(
-                    method: (Func<string?, Task<string>>)storePlugin.GetProductVariantsByCodeAsync,
-                    jsonSerializerOptions: AppJsonContext.Default.Options,
-                    functionName: "get_product_variants_by_code",
-                    description: "Lay size mau ton kho theo ma san pham, neu thieu ma thi dung ma gan nhat."),
-                KernelFunctionFactory.CreateFromMethod(
-                    method: (Func<string, Task<string>>)storePlugin.SearchKnowledgeAsync,
-                    jsonSerializerOptions: AppJsonContext.Default.Options,
-                    functionName: "search_knowledge",
-                    description: "Tim noi dung help center nhu doi tra, giao hang, thanh toan, tai khoan.")
-            };
-            kernel.ImportPluginFromFunctions("store", functions);
-#pragma warning restore IL2026, IL3050
+                writer.WriteStartObject();
+                writer.WriteString("role", "system");
+                writer.WritePropertyName("content");
+                writer.WriteStartArray();
+                writer.WriteStartObject();
+                writer.WriteString("type", "input_text");
+                writer.WriteString("text", $"EXECUTION_PLAN_HINT:\n{plannerHint}");
+                writer.WriteEndObject();
+                writer.WriteEndArray();
+                writer.WriteEndObject();
+            }
+            foreach (var m in messages)
+            {
+                var text = m.Content ?? string.Empty;
+                if (string.IsNullOrWhiteSpace(text)) continue;
+
+                var role = (m.Role ?? string.Empty).Trim().ToLowerInvariant();
+                role = role switch
+                {
+                    "system" => "system",
+                    "assistant" => "assistant",
+                    _ => "user"
+                };
+
+                writer.WriteStartObject();
+                writer.WriteString("role", role);
+                writer.WritePropertyName("content");
+                writer.WriteStartArray();
+                writer.WriteStartObject();
+                writer.WriteString("type", "input_text");
+                writer.WriteString("text", text);
+                writer.WriteEndObject();
+                writer.WriteEndArray();
+                writer.WriteEndObject();
+            }
+            writer.WriteEndArray();
+        }
+
+        static void WriteToolOutputsInput(Utf8JsonWriter writer, List<ToolCallOutputInput> outputs)
+        {
+            writer.WriteStartArray();
+            foreach (var x in outputs)
+            {
+                writer.WriteStartObject();
+                writer.WriteString("type", "function_call_output");
+                writer.WriteString("call_id", x.CallId);
+                writer.WriteString("output", x.Output);
+                writer.WriteEndObject();
+            }
+            writer.WriteEndArray();
+        }
+
+        static void WriteToolSchemas(Utf8JsonWriter writer)
+        {
+            writer.WriteStartArray();
+
+            WriteFunctionTool(
+                writer,
+                name: "search_products",
+                description: "Tim danh sach san pham theo query, vi du quan short, ao thun, ao gile.",
+                propertyName: "query",
+                propertyDescription: "Tu khoa tim san pham",
+                requiredPropertyName: "query");
+
+            WriteFunctionTool(
+                writer,
+                name: "get_products_by_category",
+                description: "Lay danh sach san pham theo danh muc, vi du short, jeans, thun, hoodie, gile.",
+                propertyName: "category",
+                propertyDescription: "Ten danh muc",
+                requiredPropertyName: "category");
+
+            WriteFunctionTool(
+                writer,
+                name: "get_product_by_code",
+                description: "Lay thong tin chi tiet san pham theo ma, vi du AT0006.",
+                propertyName: "productCode",
+                propertyDescription: "Ma san pham",
+                requiredPropertyName: "productCode");
+
+            WriteFunctionTool(
+                writer,
+                name: "get_product_variants_by_code",
+                description: "Lay size mau ton kho theo ma san pham, neu thieu ma thi dung ma gan nhat.",
+                propertyName: "productCode",
+                propertyDescription: "Ma san pham (co the bo trong)",
+                requiredPropertyName: null);
+
+            WriteFunctionTool(
+                writer,
+                name: "search_knowledge",
+                description: "Tim noi dung help center nhu doi tra, giao hang, thanh toan, tai khoan.",
+                propertyName: "query",
+                propertyDescription: "Noi dung can tim trong knowledge",
+                requiredPropertyName: "query");
+
+            writer.WriteEndArray();
+        }
+
+        static void WriteFunctionTool(
+            Utf8JsonWriter writer,
+            string name,
+            string description,
+            string propertyName,
+            string propertyDescription,
+            string? requiredPropertyName)
+        {
+            writer.WriteStartObject();
+            writer.WriteString("type", "function");
+            writer.WriteString("name", name);
+            writer.WriteString("description", description);
+            writer.WritePropertyName("parameters");
+            writer.WriteStartObject();
+            writer.WriteString("type", "object");
+            writer.WritePropertyName("properties");
+            writer.WriteStartObject();
+            writer.WritePropertyName(propertyName);
+            writer.WriteStartObject();
+            writer.WriteString("type", "string");
+            writer.WriteString("description", propertyDescription);
+            writer.WriteEndObject();
+            writer.WriteEndObject();
+            if (!string.IsNullOrWhiteSpace(requiredPropertyName))
+            {
+                writer.WritePropertyName("required");
+                writer.WriteStartArray();
+                writer.WriteStringValue(requiredPropertyName);
+                writer.WriteEndArray();
+            }
+            writer.WriteBoolean("additionalProperties", false);
+            writer.WriteEndObject();
+            writer.WriteEndObject();
+        }
+
+        static List<(string callId, string name, string argumentsJson)> ExtractFunctionCalls(JsonElement root)
+        {
+            var calls = new List<(string callId, string name, string argumentsJson)>();
+            if (!root.TryGetProperty("output", out var outputArr) || outputArr.ValueKind != JsonValueKind.Array)
+                return calls;
+
+            foreach (var item in outputArr.EnumerateArray())
+            {
+                if (!item.TryGetProperty("type", out var typeEl) || typeEl.ValueKind != JsonValueKind.String)
+                    continue;
+
+                var type = typeEl.GetString() ?? string.Empty;
+                if (!string.Equals(type, "function_call", StringComparison.Ordinal))
+                    continue;
+
+                var callId = item.TryGetProperty("call_id", out var callIdEl) && callIdEl.ValueKind == JsonValueKind.String
+                    ? callIdEl.GetString() ?? string.Empty
+                    : string.Empty;
+
+                var name = item.TryGetProperty("name", out var nameEl) && nameEl.ValueKind == JsonValueKind.String
+                    ? nameEl.GetString() ?? string.Empty
+                    : string.Empty;
+
+                var argsJson = item.TryGetProperty("arguments", out var argsEl) && argsEl.ValueKind == JsonValueKind.String
+                    ? argsEl.GetString() ?? "{}"
+                    : "{}";
+
+                if (string.IsNullOrWhiteSpace(callId) || string.IsNullOrWhiteSpace(name))
+                    continue;
+
+                calls.Add((callId, name, argsJson));
+            }
+
+            return calls;
+        }
+
+        static string ExtractOutputText(JsonElement root)
+        {
+            if (root.TryGetProperty("output_text", out var outText) && outText.ValueKind == JsonValueKind.String)
+            {
+                var txt = outText.GetString();
+                if (!string.IsNullOrWhiteSpace(txt))
+                    return txt!;
+            }
+
+            var sb = new StringBuilder();
+            if (!root.TryGetProperty("output", out var outputArr) || outputArr.ValueKind != JsonValueKind.Array)
+                return sb.ToString();
+
+            foreach (var item in outputArr.EnumerateArray())
+            {
+                if (!item.TryGetProperty("type", out var typeEl) || typeEl.ValueKind != JsonValueKind.String)
+                    continue;
+                if (!string.Equals(typeEl.GetString(), "message", StringComparison.Ordinal))
+                    continue;
+                if (!item.TryGetProperty("content", out var contentArr) || contentArr.ValueKind != JsonValueKind.Array)
+                    continue;
+
+                foreach (var contentItem in contentArr.EnumerateArray())
+                {
+                    if (!contentItem.TryGetProperty("text", out var textEl) || textEl.ValueKind != JsonValueKind.String)
+                        continue;
+
+                    var text = textEl.GetString();
+                    if (!string.IsNullOrWhiteSpace(text))
+                        sb.Append(text);
+                }
+            }
+
+            return sb.ToString();
+        }
+
+        static void ReadUsage(JsonElement root, ref int promptTokens, ref int completionTokens, ref int totalTokens)
+        {
+            if (!root.TryGetProperty("usage", out var usage) || usage.ValueKind != JsonValueKind.Object)
+                return;
+
+            promptTokens += ReadUsageInt(usage, "input_tokens");
+            completionTokens += ReadUsageInt(usage, "output_tokens");
+            totalTokens += ReadUsageInt(usage, "total_tokens");
+
+            static int ReadUsageInt(JsonElement usageObj, string prop)
+            {
+                if (!usageObj.TryGetProperty(prop, out var el)) return 0;
+                return el.ValueKind == JsonValueKind.Number && el.TryGetInt32(out var n) ? n : 0;
+            }
+        }
+
+        static IEnumerable<string> SplitForSse(string text, int maxChars)
+        {
+            if (string.IsNullOrEmpty(text))
+            {
+                yield break;
+            }
+
+            if (maxChars < 32) maxChars = 32;
+
+            for (var i = 0; i < text.Length; i += maxChars)
+            {
+                var take = Math.Min(maxChars, text.Length - i);
+                yield return text.Substring(i, take);
+            }
+        }
+
+        static async Task<string> InvokeToolAsync(StoreAgentPlugin plugin, string toolName, string argumentsJson)
+        {
+            try
+            {
+                var args = ParseArguments(argumentsJson);
+                return toolName switch
+                {
+                    "search_products" => await plugin.SearchProductsAsync(args.TryGetValue("query", out var query) ? query ?? string.Empty : string.Empty),
+                    "get_products_by_category" => await plugin.GetProductsByCategoryAsync(args.TryGetValue("category", out var category) ? category ?? string.Empty : string.Empty),
+                    "get_product_by_code" => await plugin.GetProductByCodeAsync(args.TryGetValue("productCode", out var code) ? code ?? string.Empty : string.Empty),
+                    "get_product_variants_by_code" => await plugin.GetProductVariantsByCodeAsync(args.TryGetValue("productCode", out var vCode) ? vCode : null),
+                    "search_knowledge" => await plugin.SearchKnowledgeAsync(args.TryGetValue("query", out var q) ? q ?? string.Empty : string.Empty),
+                    _ => $"Tool {toolName} khong duoc ho tro."
+                };
+            }
+            catch (Exception ex)
+            {
+                return $"Tool {toolName} loi: {ex.Message}";
+            }
+        }
+
+        static Dictionary<string, string?> ParseArguments(string argumentsJson)
+        {
+            var map = new Dictionary<string, string?>(StringComparer.Ordinal);
+            if (string.IsNullOrWhiteSpace(argumentsJson)) return map;
+
+            try
+            {
+                using var doc = JsonDocument.Parse(argumentsJson);
+                if (doc.RootElement.ValueKind != JsonValueKind.Object) return map;
+                foreach (var prop in doc.RootElement.EnumerateObject())
+                {
+                    var value = prop.Value.ValueKind switch
+                    {
+                        JsonValueKind.String => prop.Value.GetString(),
+                        JsonValueKind.Null => null,
+                        _ => prop.Value.ToString()
+                    };
+                    map[prop.Name] = value;
+                }
+            }
+            catch
+            {
+            }
+
+            return map;
+        }
+
+        static string BuildPlannerHintFromMessages(List<ChatMessage> messages)
+        {
+            var lastUser = messages.LastOrDefault(m => string.Equals(m.Role, "user", StringComparison.OrdinalIgnoreCase))?.Content ?? string.Empty;
+            var plain = RemoveDiacritics(lastUser.ToLowerInvariant());
+            if (string.IsNullOrWhiteSpace(plain))
+                return "Hoi ro yeu cau truoc khi goi nhieu tool.";
+            if (ExtractProductCode(lastUser) is not null)
+                return "Goi get_product_by_code truoc, sau do get_product_variants_by_code neu can size/mau/ton kho.";
+            if (Regex.IsMatch(plain, @"\b(size|kich co|mau|con hang|ton kho|stock)\b"))
+                return "Goi search_products hoac get_products_by_category de tim ma san pham, roi goi get_product_variants_by_code.";
+            if (Regex.IsMatch(plain, @"\b(doi mat khau|quen mat khau|tai khoan|giao hang|thanh toan|doi tra|bao mat)\b"))
+                return "Goi search_knowledge truoc; neu da du thong tin thi ket luan ngan gon.";
+            if (Regex.IsMatch(plain, @"\b(ao|quan|short|jean|thun|hoodie|gile|san pham|sp)\b"))
+                return "Goi search_products hoac get_products_by_category va loc theo dieu kien mau/size neu co.";
+            return "Chon tool toi thieu de tra loi chinh xac va ngan gon.";
+        }
+
+        static void LogStep(
+            AgentExecutionContext ctx,
+            int stepNo,
+            string phase,
+            string detail,
+            string? responseId = null,
+            string? toolName = null,
+            bool? succeeded = null,
+            long? latencyMs = null)
+        {
+            ctx.StepLogger?.Invoke(new AgentStepLog
+            {
+                AtUtc = DateTime.UtcNow,
+                TraceId = ctx.TraceId,
+                ConversationId = ctx.ConversationId,
+                UserKey = ctx.UserKey,
+                StepNo = stepNo,
+                Phase = phase,
+                Detail = detail,
+                ResponseId = responseId,
+                ToolName = toolName,
+                Succeeded = succeeded,
+                LatencyMs = latencyMs
+            });
         }
     }
 

@@ -10,41 +10,78 @@ namespace ChatAgentApi;
 
 internal static partial class ChatCore
 {
-    static async Task UpdateConversationSummaryAsync(
+    static Task UpdateConversationSummaryAsync(
         Conversation conv,
-        HttpClient openAi,
-        string apiKey,
-        string model,
         CancellationToken ct)
     {
-        if (string.IsNullOrWhiteSpace(apiKey)) return;
+        _ = ct;
 
-        if (conv.Messages.Count < 14) return;
+        if (conv.Messages.Count < 14) return Task.CompletedTask;
 
         var keepLast = 8;
         var toSummarize = conv.Messages.Take(Math.Max(0, conv.Messages.Count - keepLast)).ToList();
-        if (toSummarize.Count < 6) return;
+        if (toSummarize.Count < 6) return Task.CompletedTask;
 
-        var history = string.Join("\n", toSummarize.Select(m => $"{m.Role.ToUpper()}: {m.Content}"));
+        var recentUserAsks = toSummarize
+            .Where(m => string.Equals(m.Role, "user", StringComparison.OrdinalIgnoreCase))
+            .Select(m => NormalizeSummaryText(m.Content, 150))
+            .Where(x => !string.IsNullOrWhiteSpace(x))
+            .TakeLast(3)
+            .ToList();
 
-        var prompt = new List<ChatMessage>
-        {
-            new("system",
-                "Tóm tắt hội thoại sau thành 5-8 dòng (gạch đầu dòng).\n" +
-                "- Mục tiêu người dùng\n" +
-                "- Thông tin đã biết (mã sp/size/màu/đơn hàng...)\n" +
-                "- Giải pháp/decision đã đưa ra\n" +
-                "- Điều còn thiếu"),
-            new("user", history)
-        };
+        var recentAssistantAnswers = toSummarize
+            .Where(m => string.Equals(m.Role, "assistant", StringComparison.OrdinalIgnoreCase))
+            .Select(m => NormalizeSummaryText(m.Content, 150))
+            .Where(x => !string.IsNullOrWhiteSpace(x))
+            .TakeLast(2)
+            .ToList();
 
-        var sb = new StringBuilder();
-        await foreach (var chunk in OpenAIStream(openAi, model, apiKey, prompt, onUsage: null, ct))
-            sb.Append(chunk);
+        var knownFacts = conv.MemoryFacts
+            .Where(kvp => !string.IsNullOrWhiteSpace(kvp.Key) && !string.IsNullOrWhiteSpace(kvp.Value))
+            .OrderBy(kvp => kvp.Key, StringComparer.Ordinal)
+            .Take(6)
+            .Select(kvp => $"{kvp.Key}:{NormalizeSummaryText(kvp.Value, 40)}")
+            .ToList();
 
-        conv.Summary = sb.ToString().Trim();
+        var lines = new List<string>();
+        if (recentUserAsks.Count > 0)
+            lines.Add("- Mục tiêu gần đây: " + string.Join(" | ", recentUserAsks));
+        if (knownFacts.Count > 0)
+            lines.Add("- Dữ liệu đã biết: " + string.Join("; ", knownFacts));
+        if (recentAssistantAnswers.Count > 0)
+            lines.Add("- Hướng hỗ trợ gần đây: " + string.Join(" | ", recentAssistantAnswers));
+
+        var lastUser = toSummarize.LastOrDefault(m => string.Equals(m.Role, "user", StringComparison.OrdinalIgnoreCase))?.Content ?? string.Empty;
+        var pending = DetectPendingIntent(lastUser);
+        if (!string.IsNullOrWhiteSpace(pending))
+            lines.Add("- Điều còn thiếu: " + pending);
+
+        conv.Summary = lines.Count > 0
+            ? string.Join("\n", lines.Take(8))
+            : "- Tóm tắt: hội thoại đang diễn ra, chưa có đủ dữ liệu ổn định.";
 
         conv.Messages = conv.Messages.TakeLast(keepLast).ToList();
+        return Task.CompletedTask;
+
+        static string NormalizeSummaryText(string? text, int maxChars)
+        {
+            if (string.IsNullOrWhiteSpace(text)) return string.Empty;
+            var oneLine = Regex.Replace(text.Trim(), @"\s+", " ");
+            return oneLine.Length <= maxChars ? oneLine : oneLine[..maxChars] + "...";
+        }
+
+        static string? DetectPendingIntent(string text)
+        {
+            if (string.IsNullOrWhiteSpace(text)) return null;
+            var lower = text.ToLowerInvariant();
+            if (Regex.IsMatch(lower, @"\b(size|cỡ|co|màu|mau|tồn kho|ton kho|còn hàng|con hang)\b"))
+                return "Cần chốt mã sản phẩm cụ thể để tra size/màu/tồn kho chính xác.";
+            if (Regex.IsMatch(lower, @"\b(đổi mật khẩu|doi mat khau|quên mật khẩu|quen mat khau)\b"))
+                return "Cần hướng dẫn từng bước theo tài khoản người dùng.";
+            if (Regex.IsMatch(lower, @"\b(đổi trả|doi tra|giao hàng|giao hang|thanh toán|thanh toan)\b"))
+                return "Cần đối chiếu chính sách Help Center tương ứng.";
+            return "Chờ câu hỏi kế tiếp để làm rõ nhu cầu.";
+        }
     }
 
     static (string systemText, List<ChatMessage> promptMessages) BuildPromptWithTokenBudget(

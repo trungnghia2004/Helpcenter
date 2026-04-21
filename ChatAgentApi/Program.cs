@@ -12,8 +12,7 @@ public class Program
         builder.Services.AddCors();
         builder.Services.AddHttpClient("openai");
         builder.Services.AddHttpClient("laravel");
-        builder.Services.AddSingleton<ChatCore.IAgentPluginFactory, ChatCore.StoreAgentPluginFactory>();
-        builder.Services.AddSingleton<ChatCore.IAgentOrchestrator, ChatCore.SemanticKernelAgentOrchestrator>();
+        builder.Services.AddSingleton<ChatCore.IAgentOrchestrator, ChatCore.OpenAiResponsesAgentOrchestrator>();
 
         builder.Services.ConfigureHttpJsonOptions(o =>
         {
@@ -47,6 +46,7 @@ public class Program
         var userMemoriesPath = Path.Combine(dataDir, "user_memories.json");
         var usageLogPath = Path.Combine(logsDir, "token_usage.jsonl");
         var agentToolLogPath = Path.Combine(logsDir, "agent_tool_calls.jsonl");
+        var agentStepLogPath = Path.Combine(logsDir, "agent_steps.jsonl");
 
         if (args.Contains("--index", StringComparer.OrdinalIgnoreCase))
         {
@@ -92,6 +92,7 @@ public class Program
             UserMemoriesPath: userMemoriesPath,
             UsageLogPath: usageLogPath,
             AgentToolLogPath: agentToolLogPath,
+            AgentStepLogPath: agentStepLogPath,
             KnowledgeDir: knowledgeDir,
             LaravelBase: laravelBase,
             OpenAiApiKey: openAiApiKey,

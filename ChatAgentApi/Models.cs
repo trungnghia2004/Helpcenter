@@ -46,6 +46,21 @@ public sealed class AgentToolCallLog
     public string? Error { get; set; }
 }
 
+public sealed class AgentStepLog
+{
+    public DateTime AtUtc { get; set; }
+    public string TraceId { get; set; } = "";
+    public string ConversationId { get; set; } = "";
+    public string UserKey { get; set; } = "";
+    public int StepNo { get; set; }
+    public string Phase { get; set; } = "";
+    public string Detail { get; set; } = "";
+    public string? ResponseId { get; set; }
+    public string? ToolName { get; set; }
+    public bool? Succeeded { get; set; }
+    public long? LatencyMs { get; set; }
+}
+
 public sealed class UserMemoryRecord
 {
     public string UserKey { get; set; } = "";

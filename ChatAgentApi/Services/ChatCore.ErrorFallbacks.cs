@@ -37,6 +37,14 @@ internal static partial class ChatCore
             return CleanUserFacingLiveText(live);
         }
 
+        var knowledge = sourcesBlocks.FirstOrDefault(s =>
+            !string.IsNullOrWhiteSpace(s) &&
+            !s.StartsWith("NO_PRELOADED_SOURCE:", StringComparison.Ordinal) &&
+            !s.StartsWith("LIVE PRODUCT LIST:", StringComparison.Ordinal) &&
+            !s.StartsWith("LIVE PRODUCT DATA:", StringComparison.Ordinal));
+        if (!string.IsNullOrWhiteSpace(knowledge))
+            return CleanUserFacingLiveText(knowledge);
+
         return "Dịch vụ AI đang tạm thời không khả dụng. Bạn vui lòng thử lại sau ít phút.";
     }
 }

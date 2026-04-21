@@ -19,6 +19,7 @@ internal static partial class ChatCore
         string userMemoriesPath,
         string usageLogPath,
         string agentToolLogPath,
+        string agentStepLogPath,
         string knowledgeDir,
         string laravelBase,
         string openAiApiKey,
@@ -37,6 +38,7 @@ internal static partial class ChatCore
             userMemoriesPath: userMemoriesPath,
             usageLogPath: usageLogPath,
             agentToolLogPath: agentToolLogPath,
+            agentStepLogPath: agentStepLogPath,
             knowledgeDir: knowledgeDir,
             laravelBase: laravelBase,
             openAiApiKey: openAiApiKey,
@@ -90,6 +92,7 @@ internal static partial class ChatCore
         string userMemoriesPath,
         string usageLogPath,
         string agentToolLogPath,
+        string agentStepLogPath,
         string knowledgeDir,
         string laravelBase,
         string openAiApiKey,
@@ -110,6 +113,7 @@ internal static partial class ChatCore
         var conversationId = string.IsNullOrWhiteSpace(req.ConversationId)
             ? Guid.NewGuid().ToString("N")
             : req.ConversationId!;
+        var traceId = "tr_" + Guid.NewGuid().ToString("N");
 
         var conv = conversations.GetOrAdd(conversationId, _ => new Conversation
         {
@@ -133,6 +137,7 @@ internal static partial class ChatCore
 
         SetSseHeaders(ctx);
         ctx.Response.Headers["x-conversation-id"] = conversationId;
+        ctx.Response.Headers["x-agent-trace-id"] = traceId;
 
         if (IsRateLimited(requesterKey, rateLimitPerMinute, out var retryAfterSeconds))
         {
@@ -200,10 +205,44 @@ internal static partial class ChatCore
 
         var lastUser = conv.Messages.LastOrDefault(m => m.Role == "user")?.Content?.Trim() ?? "";
         var localKnowledgeFast = TryGetLocalKnowledgeAnswer(lastUser, knowledgeDir);
+        var hasExplicitProductCode = ExtractProductCode(lastUser) is not null;
+
+        if (!string.IsNullOrWhiteSpace(localKnowledgeFast) && !hasExplicitProductCode)
+        {
+            var messageIdLocal = "m_" + Guid.NewGuid().ToString("N");
+            var textIdLocal = "t_" + Guid.NewGuid().ToString("N");
+            var answer = localKnowledgeFast!.Trim();
+
+            await SendStart(ctx, messageIdLocal);
+            await SendTextStart(ctx, textIdLocal);
+            await SendTextDelta(ctx, textIdLocal, answer);
+            await SendTextEnd(ctx, textIdLocal);
+            await SendDone(ctx);
+
+            conv.Messages.Add(new ChatMessage("assistant", answer));
+            conv.UpdatedAtUtc = DateTime.UtcNow;
+            MergeUserMemoryFromConversation(userMemoriesPath, requesterKey, conv);
+            PersistConversations(conversationsPath, conversations);
+            AppendTokenUsageLog(
+                usageLogPath,
+                new TokenUsageLog
+                {
+                    AtUtc = DateTime.UtcNow,
+                    ConversationId = conversationId,
+                    UserKey = requesterKey,
+                    Model = "local-knowledge",
+                    PromptTokens = 0,
+                    CompletionTokens = 0,
+                    TotalTokens = 0,
+                    LatencyMs = (long)(DateTime.UtcNow - requestStarted).TotalMilliseconds,
+                    Note = "local_knowledge_short_circuit"
+                });
+            return;
+        }
 
         try
         {
-            await UpdateConversationSummaryAsync(conv, openAiHttp, openAiApiKey, openAiModel, ctx.RequestAborted);
+            await UpdateConversationSummaryAsync(conv, ctx.RequestAborted);
         }
         catch
         {
@@ -380,6 +419,8 @@ internal static partial class ChatCore
             LastProductCodeByRequester.TryGetValue(requesterKey, out var rememberedCode))
             lastKnownCode = rememberedCode;
         Action<AgentToolCallLog> toolLogger = log => AppendAgentToolCallLog(agentToolLogPath, log);
+        Action<AgentStepLog> stepLogger = log => AppendAgentStepLog(agentStepLogPath, log);
+        var plannerHint = BuildPlannerHint(lastUser);
         var agentContext = new AgentExecutionContext(
             OpenAiHttp: openAiHttp,
             LaravelHttp: laravelHttp,
@@ -391,9 +432,12 @@ internal static partial class ChatCore
             LastKnownProductCode: lastKnownCode,
             ConversationId: conversationId,
             UserKey: requesterKey,
+            TraceId: traceId,
             Policy: agentPolicy,
             RuntimeState: runtimeState,
             ToolLogger: toolLogger,
+            StepLogger: stepLogger,
+            PlannerHint: plannerHint,
             CancellationToken: ctx.RequestAborted
         );
 
@@ -419,13 +463,16 @@ internal static partial class ChatCore
         }
         catch (Exception ex)
         {
-            if ((IsRateLimitError(ex) || IsUnauthorizedError(ex)) && sb.Length == 0)
+            if (sb.Length == 0)
             {
                 var fallback = BuildRateLimitFallbackFromSources(sourcesBlocks);
                 sb.Append(fallback);
                 await SendTextDelta(ctx, textId, fallback);
                 chargeTokens = false;
-                usageNote = IsUnauthorizedError(ex) ? "openai_unauthorized_fallback" : "openai_rate_limited_fallback";
+                usageNote =
+                    IsUnauthorizedError(ex) ? "openai_unauthorized_fallback" :
+                    IsRateLimitError(ex) ? "openai_rate_limited_fallback" :
+                    "agent_stream_fallback";
             }
             else
             {
@@ -478,6 +525,28 @@ internal static partial class ChatCore
             });
 
         await SendDone(ctx);
+    }
+
+    static string BuildPlannerHint(string userText)
+    {
+        var safeUserText = userText ?? string.Empty;
+        var plain = RemoveDiacritics(safeUserText.ToLowerInvariant());
+        if (string.IsNullOrWhiteSpace(plain))
+            return "Neu khong du thong tin, hoi lai 1 cau ngan gon truoc khi goi nhieu tool.";
+
+        if (ExtractProductCode(safeUserText) is not null)
+            return "UU tien get_product_by_code truoc. Neu user hoi size/mau/ton kho thi goi tiep get_product_variants_by_code.";
+
+        if (Regex.IsMatch(plain, @"\b(size|kich co|mau|con hang|ton kho|stock)\b"))
+            return "UU tien search_products hoac get_products_by_category de xac dinh ma san pham, sau do goi get_product_variants_by_code.";
+
+        if (Regex.IsMatch(plain, @"\b(doi mat khau|quen mat khau|tai khoan|giao hang|thanh toan|doi tra|bao mat)\b"))
+            return "UU tien search_knowledge. Chi goi tool san pham neu user hoi ro ve san pham.";
+
+        if (Regex.IsMatch(plain, @"\b(ao|quan|short|jean|thun|hoodie|gile|san pham|sp)\b"))
+            return "UU tien search_products hoac get_products_by_category. Neu user co dieu kien mau/size thi loc ket qua theo dieu kien.";
+
+        return "Bat dau bang search_knowledge hoac search_products tuy theo y nghia cau hoi, tranh goi qua nhieu tool.";
     }
 }
 

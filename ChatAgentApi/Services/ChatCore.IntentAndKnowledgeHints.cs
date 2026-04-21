@@ -27,6 +27,10 @@ internal static partial class ChatCore
             file = "faq.md";
         else if (plain.Contains("theo doi don") || plain.Contains("kiem tra don") || plain.Contains("don hang"))
             file = "order-tracking.md";
+        else if (plain.Contains("cach mua hang") || plain.Contains("cach dat hang") || plain.Contains("huong dan mua") || plain.Contains("mua hang") || plain.Contains("dat hang"))
+            file = "ordering.md";
+        else if (plain.Contains("bao mat") || plain.Contains("chinh sach bao mat"))
+            file = "account.md";
         else if (plain.Contains("doi mat khau") || plain.Contains("quen mat khau") || plain.Contains("mat khau") || plain.Contains("tai khoan") || plain.Contains("dang nhap"))
             file = "account.md";
 
@@ -55,6 +59,17 @@ internal static partial class ChatCore
 
         if (string.Equals(file, "account.md", StringComparison.OrdinalIgnoreCase))
         {
+            var plain = RemoveDiacritics(query.ToLowerInvariant());
+            if (plain.Contains("chinh sach bao mat") || plain.Contains("bao mat"))
+            {
+                return
+                    "Về bảo mật tài khoản:\n" +
+                    "- Mật khẩu được quản lý trong mục Hồ sơ > Đổi mật khẩu.\n" +
+                    "- Nếu quên mật khẩu, dùng chức năng Quên mật khẩu ở trang đăng nhập.\n" +
+                    "- Nên dùng mật khẩu mạnh và không chia sẻ OTP/mã xác thực.\n\n" +
+                    "Nếu bạn cần chính sách bảo mật dữ liệu chi tiết, vui lòng liên hệ CSKH để được cung cấp bản đầy đủ.";
+            }
+
             return
                 "Bạn có thể đổi mật khẩu như sau:\n" +
                 "- Đăng nhập tài khoản.\n" +
@@ -62,6 +77,17 @@ internal static partial class ChatCore
                 "- Nhập mật khẩu cũ và mật khẩu mới.\n" +
                 "- Bấm Lưu.\n\n" +
                 "Nếu quên mật khẩu: ở màn hình đăng nhập chọn Quên mật khẩu và làm theo hướng dẫn gửi về email/số điện thoại.";
+        }
+
+        if (string.Equals(file, "ordering.md", StringComparison.OrdinalIgnoreCase))
+        {
+            return
+                "Cách đặt hàng:\n" +
+                "1. Chọn sản phẩm, size/màu và thêm vào giỏ hàng.\n" +
+                "2. Vào giỏ hàng, kiểm tra số lượng/sản phẩm.\n" +
+                "3. Nhập thông tin nhận hàng.\n" +
+                "4. Chọn phương thức thanh toán và xác nhận đặt hàng.\n" +
+                "5. Theo dõi trạng thái trong mục Đơn hàng của tôi.";
         }
 
         var lines = content
@@ -97,14 +123,16 @@ internal static partial class ChatCore
         if (ExtractProductCode(q) is not null) return true;
 
         var plain = RemoveDiacritics(q.ToLowerInvariant());
-        string[] kws =
-        {
-            "san pham", "sp", "ao", "quan", "short", "hoodie", "jean", "thun", "gile",
-            "ma", "code", "gia", "bao nhieu", "may tien",
-            "size", "co", "mau", "con hang", "ton kho"
-        };
+        if (Regex.IsMatch(plain, @"\b(ao|quan|short|hoodie|jean|thun|gile)\b"))
+            return true;
+        if (Regex.IsMatch(plain, @"\b(san pham|sp)\b"))
+            return true;
+        if (Regex.IsMatch(plain, @"\b(bao nhieu|may tien|gia)\b"))
+            return true;
+        if (Regex.IsMatch(plain, @"\b(size|kich co|mau|con hang|ton kho|stock)\b"))
+            return true;
 
-        return kws.Any(plain.Contains);
+        return false;
     }
 
     static bool IsVariantIntent(string q)
@@ -112,8 +140,7 @@ internal static partial class ChatCore
         if (string.IsNullOrWhiteSpace(q)) return false;
         var plain = RemoveDiacritics(q.ToLowerInvariant());
 
-        string[] kws = { "size", "co", "kich co", "mau", "con hang", "ton kho", "stock" };
-        return kws.Any(plain.Contains);
+        return Regex.IsMatch(plain, @"\b(size|kich co|mau|con hang|ton kho|stock)\b");
     }
 
     static bool IsBrowseIntent(string q)

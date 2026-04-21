@@ -222,6 +222,21 @@ internal static partial class ChatCore
         }
         catch { }
     }
+
+    static void AppendAgentStepLog(string logPath, AgentStepLog log)
+    {
+        try
+        {
+            var line = JsonSerializer.Serialize(
+                log,
+                AppJsonContext.Default.AgentStepLog);
+            lock (UsageFileLock)
+            {
+                File.AppendAllText(logPath, line + Environment.NewLine);
+            }
+        }
+        catch { }
+    }
 }
 
 
