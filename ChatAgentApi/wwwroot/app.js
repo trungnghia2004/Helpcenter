@@ -7,10 +7,37 @@ if (!conversationId) {
 const chat = document.getElementById("chat");
 const form = document.getElementById("form");
 const input = document.getElementById("input");
+let currentBotStart = -1;
 
 function write(t) {
   chat.textContent += t;
   chat.scrollTop = chat.scrollHeight;
+}
+
+function normalizeProductListLines(text) {
+  if (!text) return text;
+  return text
+    .replace(/(\d(?:,\d{3})*\s*VND)\s*-\s*/g, "$1\n- ")
+    .replace(/(VND)\s*(Bạn muốn|Ban muon)/g, "$1\n$2");
+}
+
+function finalizeCurrentBotMessage() {
+  if (currentBotStart < 0) return;
+  const all = chat.textContent || "";
+  if (currentBotStart > all.length) {
+    currentBotStart = -1;
+    return;
+  }
+
+  const before = all.slice(0, currentBotStart);
+  const botText = all.slice(currentBotStart);
+  const normalized = normalizeProductListLines(botText);
+  if (normalized !== botText) {
+    chat.textContent = before + normalized;
+    chat.scrollTop = chat.scrollHeight;
+  }
+
+  currentBotStart = -1;
 }
 
 form.addEventListener("submit", async (e) => {
@@ -21,6 +48,7 @@ form.addEventListener("submit", async (e) => {
   input.value = "";
 
   write("\n\nBạn: " + q + "\nBot: ");
+  currentBotStart = chat.textContent.length;
 
   const res = await fetch("/api/chat", {
     method: "POST",
@@ -34,6 +62,7 @@ form.addEventListener("submit", async (e) => {
   if (!res.ok) {
     const txt = await res.text().catch(() => "");
     write(`\n[HTTP ${res.status}] ${txt}`);
+    finalizeCurrentBotMessage();
     return;
   }
 
@@ -60,7 +89,10 @@ form.addEventListener("submit", async (e) => {
         if (!line.startsWith("data:")) continue;
 
         const data = line.slice(5).trim();
-        if (data === "[DONE]") return;
+        if (data === "[DONE]") {
+          finalizeCurrentBotMessage();
+          return;
+        }
 
         let part;
         try { part = JSON.parse(data); } catch { continue; }
@@ -70,4 +102,6 @@ form.addEventListener("submit", async (e) => {
       }
     }
   }
+
+  finalizeCurrentBotMessage();
 });

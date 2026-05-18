@@ -12,15 +12,6 @@ internal static partial class ChatCore
 {
     internal sealed record OpenAiUsage(int PromptTokens, int CompletionTokens, int TotalTokens);
 
-    internal static int ParseIntEnv(string key, int fallback, int min, int max)
-    {
-        var raw = Environment.GetEnvironmentVariable(key);
-        if (!int.TryParse(raw, out var value)) return fallback;
-        if (value < min) return min;
-        if (value > max) return max;
-        return value;
-    }
-
     static string BuildRequesterKey(ChatRequest req, HttpContext ctx)
     {
         if (!string.IsNullOrWhiteSpace(req.UserId))
@@ -32,31 +23,6 @@ internal static partial class ChatCore
 
         return "ip:unknown";
     }
-
-    static bool IsRateLimited(string requesterKey, int limitPerMinute, out int retryAfterSeconds)
-    {
-        lock (RateLimitLock)
-        {
-            var now = DateTime.UtcNow;
-            var windowStart = now.AddMinutes(-1);
-            var queue = RequestWindows.GetOrAdd(requesterKey, _ => new Queue<DateTime>());
-
-            while (queue.Count > 0 && queue.Peek() < windowStart)
-                queue.Dequeue();
-
-            if (queue.Count >= limitPerMinute)
-            {
-                var oldest = queue.Peek();
-                retryAfterSeconds = Math.Max(1, (int)Math.Ceiling((oldest.AddMinutes(1) - now).TotalSeconds));
-                return true;
-            }
-
-            queue.Enqueue(now);
-            retryAfterSeconds = 0;
-            return false;
-        }
-    }
-
     static bool IsDailyQuotaExceeded(string requesterKey, int dailyQuota, out long usedToday)
     {
         var usageKey = $"{DateOnly.FromDateTime(DateTime.UtcNow):yyyy-MM-dd}|{requesterKey}";

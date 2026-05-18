@@ -187,6 +187,27 @@ internal static partial class ChatCore
         return tokens.All(t => allowedCategoryWords.Contains(t));
     }
 
+    static bool IsCategoryOverviewIntent(string q)
+    {
+        if (string.IsNullOrWhiteSpace(q)) return false;
+        var plain = RemoveDiacritics(q.ToLowerInvariant());
+
+        if (Regex.IsMatch(plain, @"\b(danh muc|loai hang|nganh hang)\b"))
+            return true;
+
+        var asksAllProducts =
+            Regex.IsMatch(plain, @"\b(san pham|sp)\b") &&
+            (Regex.IsMatch(plain, @"\b(nhung|cac|tat ca)\b") || plain.Contains("dang co", StringComparison.Ordinal));
+        if (asksAllProducts)
+            return true;
+
+        if (plain.Contains("shop co gi", StringComparison.Ordinal) ||
+            plain.Contains("hien co gi", StringComparison.Ordinal))
+            return true;
+
+        return false;
+    }
+
     static string RemoveDiacritics(string text)
     {
         if (string.IsNullOrWhiteSpace(text)) return text;
@@ -277,16 +298,16 @@ internal static partial class ChatCore
 
     static string? ExtractRecentProductCode(Conversation conv)
     {
-        if (conv.MemoryFacts.TryGetValue("product_code", out var memCode) &&
-            !string.IsNullOrWhiteSpace(memCode))
-            return memCode;
-
         for (int i = conv.Messages.Count - 1; i >= 0; i--)
         {
             var code = ExtractProductCode(conv.Messages[i].Content);
             if (!string.IsNullOrWhiteSpace(code))
                 return code;
         }
+
+        if (conv.MemoryFacts.TryGetValue("product_code", out var memCode) &&
+            !string.IsNullOrWhiteSpace(memCode))
+            return memCode;
 
         return null;
     }

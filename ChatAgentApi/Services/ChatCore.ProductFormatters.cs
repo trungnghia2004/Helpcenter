@@ -73,9 +73,14 @@ internal static partial class ChatCore
 
         foreach (var v in variantsArr.EnumerateArray())
         {
-            var size = v.GetProperty("sizeName").GetString() ?? "";
-            var color = v.GetProperty("colorName").GetString() ?? "";
-            var qty = v.GetProperty("productQuantity").GetInt32();
+            if (!v.TryGetProperty("sizeName", out var sizeEl)) continue;
+            if (!v.TryGetProperty("colorName", out var colorEl)) continue;
+            if (!v.TryGetProperty("productQuantity", out var qtyEl)) continue;
+
+            var size = (sizeEl.GetString() ?? "").Trim();
+            var color = (colorEl.GetString() ?? "").Trim();
+            var qty = qtyEl.ValueKind == JsonValueKind.Number && qtyEl.TryGetInt32(out var n) ? n : 0;
+            if (string.IsNullOrWhiteSpace(size) || string.IsNullOrWhiteSpace(color)) continue;
 
             if (!map.TryGetValue(size, out var list))
             {
@@ -84,6 +89,9 @@ internal static partial class ChatCore
             }
             list.Add((color, qty));
         }
+
+        if (map.Count == 0)
+            return "VARIANTS: (không có dữ liệu size/màu hợp lệ trong hệ thống)";
 
         var sb = new StringBuilder();
         sb.AppendLine("VARIANTS (size / màu / tồn kho):");

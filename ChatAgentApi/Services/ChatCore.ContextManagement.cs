@@ -92,7 +92,7 @@ internal static partial class ChatCore
         List<string> sourcesBlocks,      
         int maxPromptTokens = 7000,      
         int reserveForAnswerTokens = 800,
-        int maxHistoryMessages = 10      
+        int maxHistoryMessages = 6      
     )
     {
         static int EstTokens(string s) => string.IsNullOrEmpty(s) ? 0 : (s.Length / 4) + 1;

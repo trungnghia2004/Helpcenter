@@ -1,57 +1,26 @@
-﻿using System.Collections.Concurrent;
+using System.Collections.Concurrent;
 using System.Globalization;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Linq;
+using Microsoft.AspNetCore.Http.Timeouts;
 
 namespace ChatAgentApi;
 
 internal static partial class ChatCore
 {
-    internal static void MapApiEndpoints(
-        WebApplication app,
-        ConcurrentDictionary<string, Conversation> conversations,
-        KnowledgeBase kb,
-        string conversationsPath,
-        string dailyUsagePath,
-        string userMemoriesPath,
-        string usageLogPath,
-        string agentToolLogPath,
-        string agentStepLogPath,
-        string knowledgeDir,
-        string laravelBase,
-        string openAiApiKey,
-        string openAiModel,
-        string openAiEmbedModel,
-        AgentRunPolicy agentPolicy,
-        int rateLimitPerMinute,
-        int dailyTokenQuota)
+    internal static void MapApiEndpoints(WebApplication app)
     {
-        app.MapPost("/api/chat", ctx => HandleChatAsync(
-            ctx: ctx,
-            conversations: conversations,
-            kb: kb,
-            conversationsPath: conversationsPath,
-            dailyUsagePath: dailyUsagePath,
-            userMemoriesPath: userMemoriesPath,
-            usageLogPath: usageLogPath,
-            agentToolLogPath: agentToolLogPath,
-            agentStepLogPath: agentStepLogPath,
-            knowledgeDir: knowledgeDir,
-            laravelBase: laravelBase,
-            openAiApiKey: openAiApiKey,
-            openAiModel: openAiModel,
-            openAiEmbedModel: openAiEmbedModel,
-            agentPolicy: agentPolicy,
-            rateLimitPerMinute: rateLimitPerMinute,
-            dailyTokenQuota: dailyTokenQuota
-        ));
+        app.MapPost("/api/chat", (HttpContext ctx, IChatRequestHandler handler) =>
+                handler.HandleAsync(ctx))
+            .RequireRateLimiting(MiddlewarePolicyNames.ChatPolicyName)
+            .WithRequestTimeout(MiddlewarePolicyNames.ChatTimeoutPolicyName);
 
-        app.MapGet("/api/conversations/{id}", (string id) =>
+        app.MapGet("/api/conversations/{id}", (string id, ChatAgentRuntime runtime) =>
         {
-            return conversations.TryGetValue(id, out var conv)
+            return runtime.Conversations.TryGetValue(id, out var conv)
                 ? Results.Ok(conv)
                 : Results.NotFound();
         });
@@ -85,30 +54,33 @@ internal static partial class ChatCore
 
     static async Task HandleChatAsync(
         HttpContext ctx,
-        ConcurrentDictionary<string, Conversation> conversations,
-        KnowledgeBase kb,
-        string conversationsPath,
-        string dailyUsagePath,
-        string userMemoriesPath,
-        string usageLogPath,
-        string agentToolLogPath,
-        string agentStepLogPath,
-        string knowledgeDir,
-        string laravelBase,
-        string openAiApiKey,
-        string openAiModel,
-        string openAiEmbedModel,
-        AgentRunPolicy agentPolicy,
-        int rateLimitPerMinute,
-        int dailyTokenQuota)
+        ChatAgentRuntime runtime,
+        IHttpClientFactory httpClientFactory,
+        IAgentOrchestrator agentOrchestrator)
     {
+        var conversations = runtime.Conversations;
+        var kb = runtime.KnowledgeBase;
+        var conversationsPath = runtime.ConversationsPath;
+        var dailyUsagePath = runtime.DailyUsagePath;
+        var userMemoriesPath = runtime.UserMemoriesPath;
+        var usageLogPath = runtime.UsageLogPath;
+        var agentToolLogPath = runtime.AgentToolLogPath;
+        var agentStepLogPath = runtime.AgentStepLogPath;
+        var knowledgeDir = runtime.KnowledgeDir;
+        var laravelBase = runtime.Options.LaravelBase;
+        var openAiApiKey = runtime.Options.OpenAiApiKey;
+        var openAiModel = runtime.Options.OpenAiModel;
+        var openAiEmbedModel = runtime.Options.OpenAiEmbedModel;
+        var agentPolicy = runtime.AgentPolicy;
+        var dailyTokenQuota = runtime.Options.DailyTokenQuota;
+
         var req = await ParseIncomingChatRequestAsync(ctx.Request, ctx.RequestAborted);
         var requestStarted = DateTime.UtcNow;
         var requesterKey = BuildRequesterKey(req, ctx);
         var overQuota = IsDailyQuotaExceeded(requesterKey, dailyTokenQuota, out var usedToday);
 
-        var openAiHttp = ctx.RequestServices.GetRequiredService<IHttpClientFactory>().CreateClient("openai");
-        var laravelHttp = ctx.RequestServices.GetRequiredService<IHttpClientFactory>().CreateClient("laravel");
+        var openAiHttp = httpClientFactory.CreateClient("openai");
+        var laravelHttp = httpClientFactory.CreateClient("laravel");
 
         var conversationId = string.IsNullOrWhiteSpace(req.ConversationId)
             ? Guid.NewGuid().ToString("N")
@@ -139,47 +111,15 @@ internal static partial class ChatCore
         ctx.Response.Headers["x-conversation-id"] = conversationId;
         ctx.Response.Headers["x-agent-trace-id"] = traceId;
 
-        if (IsRateLimited(requesterKey, rateLimitPerMinute, out var retryAfterSeconds))
-        {
-            var messageIdRate = "m_" + Guid.NewGuid().ToString("N");
-            var textIdRate = "t_" + Guid.NewGuid().ToString("N");
-            var text = $"Bạn gửi yêu cầu quá nhanh. Vui lòng thử lại sau khoảng {retryAfterSeconds} giây.";
-
-            await SendStart(ctx, messageIdRate);
-            await SendTextStart(ctx, textIdRate);
-            await SendTextDelta(ctx, textIdRate, text);
-            await SendTextEnd(ctx, textIdRate);
-            await SendDone(ctx);
-
-            conv.Messages.Add(new ChatMessage("assistant", text));
-            conv.UpdatedAtUtc = DateTime.UtcNow;
-            PersistConversations(conversationsPath, conversations);
-            AppendTokenUsageLog(
-                usageLogPath,
-                new TokenUsageLog
-                {
-                    AtUtc = DateTime.UtcNow,
-                    ConversationId = conversationId,
-                    UserKey = requesterKey,
-                    Model = "rate-limit",
-                    PromptTokens = 0,
-                    CompletionTokens = 0,
-                    TotalTokens = 0,
-                    LatencyMs = (long)(DateTime.UtcNow - requestStarted).TotalMilliseconds,
-                    Note = "rate_limited"
-                });
-            return;
-        }
-
         if (overQuota)
         {
             var messageIdQuota = "m_" + Guid.NewGuid().ToString("N");
             var textIdQuota = "t_" + Guid.NewGuid().ToString("N");
-            var text = $"Bạn đã dùng hết quota token trong ngày ({usedToday:N0}/{dailyTokenQuota:N0}). Vui lòng thử lại vào ngày mai.";
+            var text = $"B?n d� d�ng h?t quota token trong ng�y ({usedToday:N0}/{dailyTokenQuota:N0}). Vui l�ng th? l?i v�o ng�y mai.";
 
             await SendStart(ctx, messageIdQuota);
             await SendTextStart(ctx, textIdQuota);
-            await SendTextDelta(ctx, textIdQuota, text);
+            await SendTextDeltaChunked(ctx, textIdQuota, text);
             await SendTextEnd(ctx, textIdQuota);
             await SendDone(ctx);
 
@@ -204,8 +144,51 @@ internal static partial class ChatCore
         }
 
         var lastUser = conv.Messages.LastOrDefault(m => m.Role == "user")?.Content?.Trim() ?? "";
+        var recentConversationProductCode = ExtractRecentProductCode(conv);
+        var shortAffirmative = IsShortAffirmative(lastUser);
+        var recentRequesterProductCode = shortAffirmative
+            ? TryGetRequesterRecentProductCode(requesterKey, maxAge: TimeSpan.FromMinutes(5))
+            : null;
+        var effectiveRecentProductCode = !string.IsNullOrWhiteSpace(recentConversationProductCode)
+            ? recentConversationProductCode
+            : recentRequesterProductCode;
+        var variantFollowupConfirmation =
+            IsVariantFollowupConfirmation(lastUser, conv) ||
+            (shortAffirmative && !string.IsNullOrWhiteSpace(effectiveRecentProductCode));
         var localKnowledgeFast = TryGetLocalKnowledgeAnswer(lastUser, knowledgeDir);
         var hasExplicitProductCode = ExtractProductCode(lastUser) is not null;
+
+        if (shortAffirmative && string.IsNullOrWhiteSpace(effectiveRecentProductCode))
+        {
+            var messageIdClarify = "m_" + Guid.NewGuid().ToString("N");
+            var textIdClarify = "t_" + Guid.NewGuid().ToString("N");
+            var clarify = "Bạn muốn mình kiểm tra sản phẩm nào? Vui lòng gửi mã (VD: AT0009) hoặc tên sản phẩm cụ thể.";
+
+            await SendStart(ctx, messageIdClarify);
+            await SendTextStart(ctx, textIdClarify);
+            await SendTextDeltaChunked(ctx, textIdClarify, clarify);
+            await SendTextEnd(ctx, textIdClarify);
+            await SendDone(ctx);
+
+            conv.Messages.Add(new ChatMessage("assistant", clarify));
+            conv.UpdatedAtUtc = DateTime.UtcNow;
+            PersistConversations(conversationsPath, conversations);
+            AppendTokenUsageLog(
+                usageLogPath,
+                new TokenUsageLog
+                {
+                    AtUtc = DateTime.UtcNow,
+                    ConversationId = conversationId,
+                    UserKey = requesterKey,
+                    Model = "clarify",
+                    PromptTokens = 0,
+                    CompletionTokens = 0,
+                    TotalTokens = 0,
+                    LatencyMs = (long)(DateTime.UtcNow - requestStarted).TotalMilliseconds,
+                    Note = "short_affirmative_without_context"
+                });
+            return;
+        }
 
         if (!string.IsNullOrWhiteSpace(localKnowledgeFast) && !hasExplicitProductCode)
         {
@@ -215,7 +198,7 @@ internal static partial class ChatCore
 
             await SendStart(ctx, messageIdLocal);
             await SendTextStart(ctx, textIdLocal);
-            await SendTextDelta(ctx, textIdLocal, answer);
+            await SendTextDeltaChunked(ctx, textIdLocal, answer);
             await SendTextEnd(ctx, textIdLocal);
             await SendDone(ctx);
 
@@ -257,27 +240,37 @@ internal static partial class ChatCore
         }
 
         var sourcesBlocks = new List<string>();
+        var isProductQuery =
+            (!string.IsNullOrWhiteSpace(lastUser) && IsProductIntent(lastUser)) ||
+            variantFollowupConfirmation;
+        string? fastProductAnswer = null;
 
-        if (!string.IsNullOrWhiteSpace(lastUser) && IsProductIntent(lastUser))
+        if (isProductQuery)
         {
             try
             {
-                var needVariants = IsVariantIntent(lastUser);
+                var needVariants = IsVariantIntent(lastUser) || variantFollowupConfirmation;
+                var categoryOverviewIntent = IsCategoryOverviewIntent(lastUser);
                 var categoryKeyword = ExtractCategoryKeyword(lastUser);
                 var browseIntent =
                     IsBrowseIntent(lastUser) ||
                     IsCategoryOnlyIntent(lastUser) ||
+                    categoryOverviewIntent ||
                     !string.IsNullOrWhiteSpace(categoryKeyword);
                 var code = ExtractProductCode(lastUser)
-                    ?? (needVariants ? ExtractRecentProductCode(conv) : null);
-                if (string.IsNullOrWhiteSpace(code) && needVariants &&
-                    LastProductCodeByRequester.TryGetValue(requesterKey, out var remembered))
-                {
-                    code = remembered;
-                }
+                    ?? (needVariants
+                        ? (ExtractRecentProductCode(conv) ?? (shortAffirmative ? recentRequesterProductCode : null))
+                        : null);
 
-                if (!string.IsNullOrWhiteSpace(code))
-                    LastProductCodeByRequester[requesterKey] = code;
+                if (categoryOverviewIntent && string.IsNullOrWhiteSpace(code))
+                {
+                    var overview = await BuildCategoryOverviewAnswerAsync(laravelHttp, laravelBase, ctx.RequestAborted);
+                    if (!string.IsNullOrWhiteSpace(overview))
+                    {
+                        fastProductAnswer = overview;
+                        sourcesBlocks.Add(overview);
+                    }
+                }
 
                 JsonElement? product = null;
                 List<JsonElement>? products = null;
@@ -286,34 +279,66 @@ internal static partial class ChatCore
                 {
                     product = await GetProductByCodeAsync(laravelHttp, laravelBase, code!, ctx.RequestAborted);
                 }
-                else
+                else if (string.IsNullOrWhiteSpace(fastProductAnswer))
                 {
-                    if (!string.IsNullOrWhiteSpace(categoryKeyword))
+                    var isPureCategoryQuery = IsCategoryOnlyIntent(lastUser);
+                    if (!string.IsNullOrWhiteSpace(categoryKeyword) && isPureCategoryQuery)
+                    {
+                        // Query thuần danh mục (vd: "áo thun", "quần short") thì lấy list theo category.
                         products = await GetProductsByCategoryAsync(laravelHttp, laravelBase, categoryKeyword!, ctx.RequestAborted);
+                    }
                     else
+                    {
+                        // Query có mô tả cụ thể (vd: "áo thun kaki", "áo thun wash")
+                        // phải dùng search + ranking để ưu tiên đúng sản phẩm.
                         products = await SearchProductsAsync(laravelHttp, laravelBase, lastUser, ctx.RequestAborted);
+                    }
 
                     if (products is null || products.Count == 0)
                         products = await SearchProductsAsync(laravelHttp, laravelBase, lastUser, ctx.RequestAborted);
+
+                    if (products.Count > 1)
+                    {
+                        var descriptors = ExtractDescriptorKeywords(RemoveDiacritics(lastUser.ToLowerInvariant()));
+                        if (descriptors.Count > 0)
+                        {
+                            var narrowed = products
+                                .Where(p =>
+                                {
+                                    var name = p.TryGetProperty("productName", out var n) ? (n.GetString() ?? string.Empty) : string.Empty;
+                                    var category = p.TryGetProperty("categoryName", out var cat) ? (cat.GetString() ?? string.Empty) : string.Empty;
+                                    var combined = RemoveDiacritics($"{name} {category}".ToLowerInvariant());
+                                    return descriptors.All(d => combined.Contains(d, StringComparison.Ordinal));
+                                })
+                                .ToList();
+                            if (narrowed.Count > 0)
+                                products = narrowed;
+                        }
+                    }
 
                     if (products.Count > 0)
                         product = products[0];
                 }
 
-                if (browseIntent && products is { Count: > 0 } && string.IsNullOrWhiteSpace(code))
+                if (browseIntent && products is { Count: > 1 } && string.IsNullOrWhiteSpace(code))
                 {
                     sourcesBlocks.Add(FormatProductList(products, maxItems: 5));
+                    fastProductAnswer = BuildFastProductAnswer(
+                        mainContent: FormatProductList(products, maxItems: 5),
+                        followup: "Bạn muốn xem chi tiết sản phẩm nào hoặc lọc theo màu/size nào không?");
                 }
                 else if (product is not null)
                 {
                     var p = product.Value;
                     var live = new StringBuilder();
-
                     if (p.TryGetProperty("productCode", out var pCodeEl))
                     {
                         var pCode = pCodeEl.GetString();
                         if (!string.IsNullOrWhiteSpace(pCode))
-                            LastProductCodeByRequester[requesterKey] = pCode!;
+                        {
+                            conv.MemoryFacts["product_code"] = pCode!;
+                            UpdateRequesterRecentProductCode(requesterKey, pCode!);
+                        }
                     }
 
                     live.AppendLine(FormatProduct(p));
@@ -326,11 +351,58 @@ internal static partial class ChatCore
                     }
 
                     sourcesBlocks.Add(live.ToString().Trim());
+                    fastProductAnswer = BuildFastProductAnswer(
+                        mainContent: live.ToString().Trim(),
+                        followup: needVariants
+                            ? "Bạn cần mình kiểm tra thêm màu/size khác không?"
+                            : "Bạn muốn mình kiểm tra thêm size/màu/tồn kho không?");
                 }
             }
             catch
             {
+                if (string.IsNullOrWhiteSpace(fastProductAnswer))
+                {
+                    fastProductAnswer = "Tạm thời không lấy được dữ liệu sản phẩm. Bạn vui lòng thử lại sau ít phút.";
+                }
             }
+        }
+
+        if (isProductQuery && string.IsNullOrWhiteSpace(fastProductAnswer))
+        {
+            fastProductAnswer = "Mình chưa xác định được sản phẩm cụ thể. Bạn gửi thêm mã sản phẩm (VD: AT0009) hoặc tên chi tiết hơn nhé.";
+        }
+
+        if (isProductQuery && !string.IsNullOrWhiteSpace(fastProductAnswer))
+        {
+            var messageIdFast = "m_" + Guid.NewGuid().ToString("N");
+            var textIdFast = "t_" + Guid.NewGuid().ToString("N");
+            var answer = fastProductAnswer!.Trim();
+
+            await SendStart(ctx, messageIdFast);
+            await SendTextStart(ctx, textIdFast);
+            await SendTextDeltaChunked(ctx, textIdFast, answer);
+            await SendTextEnd(ctx, textIdFast);
+            await SendDone(ctx);
+
+            conv.Messages.Add(new ChatMessage("assistant", answer));
+            conv.UpdatedAtUtc = DateTime.UtcNow;
+            MergeUserMemoryFromConversation(userMemoriesPath, requesterKey, conv);
+            PersistConversations(conversationsPath, conversations);
+            AppendTokenUsageLog(
+                usageLogPath,
+                new TokenUsageLog
+                {
+                    AtUtc = DateTime.UtcNow,
+                    ConversationId = conversationId,
+                    UserKey = requesterKey,
+                    Model = "fast-product",
+                    PromptTokens = 0,
+                    CompletionTokens = 0,
+                    TotalTokens = 0,
+                    LatencyMs = (long)(DateTime.UtcNow - requestStarted).TotalMilliseconds,
+                    Note = "product_fast_path"
+                });
+            return;
         }
 
         if (kb.Chunks.Count > 0 && !string.IsNullOrWhiteSpace(lastUser))
@@ -341,13 +413,13 @@ internal static partial class ChatCore
                 if (!string.IsNullOrWhiteSpace(openAiApiKey))
                 {
                     var qVec = await KnowledgeIndexer.EmbedAsync(openAiHttp, openAiApiKey, openAiEmbedModel, lastUser, ctx.RequestAborted);
-                    top = kb.SearchTopK(qVec, k: 3)
+                    top = kb.SearchTopK(qVec, k: 2)
                             .Where(x => x.score >= 0.35f)
                             .ToList();
                 }
                 else
                 {
-                    top = kb.SearchTopKLexical(lastUser, k: 3)
+                    top = kb.SearchTopKLexical(lastUser, k: 2)
                             .Where(x => x.score >= 1f)
                             .ToList();
                 }
@@ -357,7 +429,7 @@ internal static partial class ChatCore
             }
             catch
             {
-                var top = kb.SearchTopKLexical(lastUser, k: 3)
+                var top = kb.SearchTopKLexical(lastUser, k: 2)
                             .Where(x => x.score >= 1f)
                             .ToList();
                 if (top.Count > 0)
@@ -387,9 +459,10 @@ internal static partial class ChatCore
             "Bạn là trợ lý Help Center cho website bán quần áo.\n" +
             "QUY TẮC BẮT BUỘC:\n" +
             "- Chỉ trả lời dựa trên SOURCES.\n" +
-            "- Nếu SOURCES không đủ, nói rõ: \"Mình không tìm thấy thông tin này trong tài liệu/nguồn dữ liệu cửa hàng.\".\n" +
-            "- Không bịa.\n" +
+            "- Nếu SOURCES không đủ, nói rõ: \"Mình không tìm thấy thông tin này trong tài liệu/nguồn dữ liệu của cửa hàng.\".\n" +
+            "- Không bịa đặt.\n" +
             "- Trả lời ngắn gọn, gạch đầu dòng.\n" +
+            "- Khi liệt kê sản phẩm, mỗi sản phẩm phải ở một dòng riêng bắt đầu bằng '- '.\n" +
             "- Nếu thiếu sản phẩm cụ thể khi hỏi size/màu/tồn kho, hỏi lại 1 câu.\n" +
             "- Chủ động dùng tool của plugin store để tra dữ liệu sản phẩm/knowledge trước khi kết luận không có dữ liệu.\n" +
             $"- Giới hạn gọi tool tối đa: {Math.Max(1, agentPolicy.MaxToolCalls)} lần cho mỗi lượt trả lời.\n";
@@ -402,7 +475,7 @@ internal static partial class ChatCore
             sourcesBlocks: sourcesBlocks,
             maxPromptTokens: 7000,
             reserveForAnswerTokens: 800,
-            maxHistoryMessages: 10
+            maxHistoryMessages: 6
         );
 
         var messageId = "m_" + Guid.NewGuid().ToString("N");
@@ -412,12 +485,8 @@ internal static partial class ChatCore
         var promptTokensEstimated = EstimateTokenCount(prompt);
         var chargeTokens = true;
         var usageNote = "";
-        var agentOrchestrator = ctx.RequestServices.GetRequiredService<IAgentOrchestrator>();
         var runtimeState = new AgentRuntimeState();
         var lastKnownCode = ExtractRecentProductCode(conv);
-        if (string.IsNullOrWhiteSpace(lastKnownCode) &&
-            LastProductCodeByRequester.TryGetValue(requesterKey, out var rememberedCode))
-            lastKnownCode = rememberedCode;
         Action<AgentToolCallLog> toolLogger = log => AppendAgentToolCallLog(agentToolLogPath, log);
         Action<AgentStepLog> stepLogger = log => AppendAgentStepLog(agentStepLogPath, log);
         var plannerHint = BuildPlannerHint(lastUser);
@@ -467,7 +536,7 @@ internal static partial class ChatCore
             {
                 var fallback = BuildRateLimitFallbackFromSources(sourcesBlocks);
                 sb.Append(fallback);
-                await SendTextDelta(ctx, textId, fallback);
+                await SendTextDeltaChunked(ctx, textId, fallback);
                 chargeTokens = false;
                 usageNote =
                     IsUnauthorizedError(ex) ? "openai_unauthorized_fallback" :
@@ -525,6 +594,114 @@ internal static partial class ChatCore
             });
 
         await SendDone(ctx);
+    }
+
+    static string BuildFastProductAnswer(string mainContent, string followup)
+    {
+        var cleaned = CleanUserFacingLiveText(mainContent);
+        if (string.IsNullOrWhiteSpace(cleaned))
+            return "Mình không tìm thấy thông tin này trong tài liệu/nguồn dữ liệu cửa hàng.";
+
+        if (cleaned.EndsWith("\n", StringComparison.Ordinal))
+            cleaned = cleaned.TrimEnd();
+
+        return $"{cleaned}\n{followup}";
+    }
+
+    static async Task<string> BuildCategoryOverviewAnswerAsync(HttpClient laravelHttp, string laravelBase, CancellationToken ct)
+    {
+        var categories = new (string label, string keyword)[]
+        {
+            ("Áo thun", "Thun"),
+            ("Quần short", "Short"),
+            ("Quần jeans", "Jeans"),
+            ("Áo hoodie", "Hoodie"),
+            ("Áo gile", "Gile"),
+            ("Áo khoác", "Khoa")
+        };
+
+        var lines = new List<string>();
+        foreach (var (label, keyword) in categories)
+        {
+            var items = await GetProductsByCategoryAsync(laravelHttp, laravelBase, keyword, ct);
+            if (items.Count > 0)
+                lines.Add($"- {label}: {items.Count} sản phẩm");
+        }
+
+        if (lines.Count == 0)
+            return "Hiện tại mình chưa lấy được danh mục sản phẩm từ hệ thống.";
+
+        return "Hiện shop đang có các danh mục sản phẩm:\n" +
+               string.Join("\n", lines) +
+               "\nBạn muốn mình mở chi tiết danh mục nào?";
+    }
+
+    static bool IsVariantFollowupConfirmation(string userText, Conversation conv)
+    {
+        if (string.IsNullOrWhiteSpace(userText)) return false;
+        var plain = RemoveDiacritics(userText.ToLowerInvariant()).Trim();
+        var isAffirmative = IsShortAffirmative(plain);
+        if (!isAffirmative) return false;
+
+        ChatMessage? previousAssistant = null;
+        for (int i = conv.Messages.Count - 2; i >= 0; i--)
+        {
+            if (string.Equals(conv.Messages[i].Role, "assistant", StringComparison.OrdinalIgnoreCase))
+            {
+                previousAssistant = conv.Messages[i];
+                break;
+            }
+        }
+
+        if (previousAssistant is null || string.IsNullOrWhiteSpace(previousAssistant.Content))
+            return false;
+
+        var assistantPlain = RemoveDiacritics(previousAssistant.Content.ToLowerInvariant());
+        var askedVariant =
+            (assistantPlain.Contains("size", StringComparison.Ordinal) ||
+             assistantPlain.Contains("mau", StringComparison.Ordinal) ||
+             assistantPlain.Contains("ton kho", StringComparison.Ordinal)) &&
+            (assistantPlain.Contains("ban muon", StringComparison.Ordinal) ||
+             assistantPlain.Contains("ban can", StringComparison.Ordinal) ||
+             assistantPlain.Contains("kiem tra", StringComparison.Ordinal));
+
+        if (!askedVariant) return false;
+        return !string.IsNullOrWhiteSpace(ExtractRecentProductCode(conv));
+    }
+
+    static bool IsShortAffirmative(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return false;
+        var plain = RemoveDiacritics(text.ToLowerInvariant()).Trim();
+        return plain == "co" ||
+               plain == "ok" ||
+               plain == "oke" ||
+               plain == "yes" ||
+               plain == "uhm" ||
+               plain == "duoc" ||
+               plain == "xem" ||
+               plain == "check";
+    }
+
+    static string? TryGetRequesterRecentProductCode(string requesterKey, TimeSpan maxAge)
+    {
+        if (string.IsNullOrWhiteSpace(requesterKey))
+            return null;
+        if (!RecentProductByRequester.TryGetValue(requesterKey, out var hint))
+            return null;
+        if (DateTime.UtcNow - hint.AtUtc > maxAge)
+        {
+            RecentProductByRequester.TryRemove(requesterKey, out _);
+            return null;
+        }
+        return string.IsNullOrWhiteSpace(hint.ProductCode) ? null : hint.ProductCode;
+    }
+
+    static void UpdateRequesterRecentProductCode(string requesterKey, string productCode)
+    {
+        if (string.IsNullOrWhiteSpace(requesterKey) || string.IsNullOrWhiteSpace(productCode))
+            return;
+        RecentProductByRequester[requesterKey] = new RecentProductHint(productCode.Trim().ToUpperInvariant(), DateTime.UtcNow);
     }
 
     static string BuildPlannerHint(string userText)

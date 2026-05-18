@@ -1,6 +1,3 @@
-﻿using System.Collections.Concurrent;
-using System.Globalization;
-using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -10,124 +7,6 @@ namespace ChatAgentApi;
 
 internal static partial class ChatCore
 {
-    internal static class KnowledgeIndexer
-    {
-        public static async Task BuildIndexJsonl(
-            HttpClient http,
-            string apiKey,
-            string embeddingModel,
-            string knowledgeDir,
-            string outPath,
-            int chunkChars,
-            int overlapChars,
-            CancellationToken ct)
-        {
-            var files = Directory.EnumerateFiles(knowledgeDir, "*.md", SearchOption.AllDirectories).ToList();
-            if (files.Count == 0)
-            {
-                Console.WriteLine($"No .md files found in: {knowledgeDir}");
-                File.WriteAllText(outPath, "");
-                return;
-            }
-
-            using var fs = new FileStream(outPath, FileMode.Create, FileAccess.Write, FileShare.None);
-            using var sw = new StreamWriter(fs, Encoding.UTF8);
-
-            var id = 0;
-            foreach (var f in files)
-            {
-                var source = Path.GetFileName(f);
-                var text = await File.ReadAllTextAsync(f, ct);
-
-                foreach (var chunk in ChunkText(text, chunkChars, overlapChars))
-                {
-                    id++;
-                    var vec = await EmbedAsync(http, apiKey, embeddingModel, chunk, ct);
-                    var line = BuildJsonlLine(id.ToString(), source, chunk, vec);
-                    await sw.WriteLineAsync(line);
-                    await sw.FlushAsync();
-                    Console.WriteLine($"Indexed {source} chunk #{id}");
-                }
-            }
-        }
-
-        public static IEnumerable<string> ChunkText(string text, int chunkChars, int overlapChars)
-        {
-            text = text.Replace("\r\n", "\n");
-            if (chunkChars <= 0) yield break;
-
-            var i = 0;
-            while (i < text.Length)
-            {
-                var take = Math.Min(chunkChars, text.Length - i);
-                var chunk = text.Substring(i, take).Trim();
-                if (!string.IsNullOrWhiteSpace(chunk))
-                    yield return chunk;
-
-                if (i + take >= text.Length) break;
-                i = Math.Max(0, i + take - overlapChars);
-            }
-        }
-
-        public static async Task<float[]> EmbedAsync(HttpClient http, string apiKey, string model, string text, CancellationToken ct)
-        {
-            var url = "https://api.openai.com/v1/embeddings";
-
-            using var req = new HttpRequestMessage(HttpMethod.Post, url);
-            req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
-            req.Content = new StringContent(BuildEmbedRequestJson(model, text), Encoding.UTF8, "application/json");
-
-            using var resp = await http.SendAsync(req, ct);
-            resp.EnsureSuccessStatusCode();
-
-            var json = await resp.Content.ReadAsStringAsync(ct);
-
-            using var doc = JsonDocument.Parse(json);
-            var values = doc.RootElement.GetProperty("data")[0].GetProperty("embedding");
-
-            var vec = new float[values.GetArrayLength()];
-            var idx = 0;
-            foreach (var v in values.EnumerateArray())
-                vec[idx++] = (float)v.GetDouble();
-
-            return vec;
-        }
-
-        static string BuildEmbedRequestJson(string model, string text)
-        {
-            using var ms = new MemoryStream();
-            using (var w = new Utf8JsonWriter(ms))
-            {
-                w.WriteStartObject();
-                w.WriteString("model", model);
-                w.WriteString("input", text);
-                w.WriteEndObject();
-            }
-            return Encoding.UTF8.GetString(ms.ToArray());
-        }
-
-        static string BuildJsonlLine(string id, string source, string text, float[] vec)
-        {
-            using var ms = new MemoryStream();
-            using (var w = new Utf8JsonWriter(ms))
-            {
-                w.WriteStartObject();
-                w.WriteString("id", id);
-                w.WriteString("source", source);
-                w.WriteString("text", text);
-
-                w.WritePropertyName("vector");
-                w.WriteStartArray();
-                for (int i = 0; i < vec.Length; i++)
-                    w.WriteNumberValue(vec[i]);
-                w.WriteEndArray();
-
-                w.WriteEndObject();
-            }
-            return Encoding.UTF8.GetString(ms.ToArray());
-        }
-    }
-
     internal sealed class KnowledgeChunk
     {
         public required string Id { get; init; }
@@ -249,6 +128,3 @@ internal static partial class ChatCore
         }
     }
 }
-
-
-

@@ -4,6 +4,14 @@ namespace ChatAgentApi;
 
 internal static partial class ChatCore
 {
+    static readonly HashSet<string> EphemeralConversationFactKeys = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "product_code",
+        "size",
+        "color",
+        "intent"
+    };
+
     internal static void LoadUserMemories(string path)
     {
         lock (UserMemoryFileLock)
@@ -77,6 +85,7 @@ internal static partial class ChatCore
 
             var facts = record.Facts
                 .Where(kvp => !string.IsNullOrWhiteSpace(kvp.Key) && !string.IsNullOrWhiteSpace(kvp.Value))
+                .Where(kvp => !EphemeralConversationFactKeys.Contains(kvp.Key))
                 .OrderBy(kvp => kvp.Key, StringComparer.Ordinal)
                 .Take(Math.Max(1, maxFacts))
                 .Select(kvp => $"- {kvp.Key}: {kvp.Value}");
@@ -106,6 +115,8 @@ internal static partial class ChatCore
             foreach (var kvp in conv.MemoryFacts)
             {
                 if (string.IsNullOrWhiteSpace(kvp.Key) || string.IsNullOrWhiteSpace(kvp.Value))
+                    continue;
+                if (EphemeralConversationFactKeys.Contains(kvp.Key))
                     continue;
 
                 record.Facts[kvp.Key] = kvp.Value;

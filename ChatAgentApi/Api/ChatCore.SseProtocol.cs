@@ -31,6 +31,25 @@ internal static partial class ChatCore
     static Task SendTextDelta(HttpContext ctx, string textId, string delta)
         => SendData(ctx, $"{{\"type\":\"text-delta\",\"id\":\"{JsonEscape(textId)}\",\"delta\":\"{JsonEscape(delta)}\"}}");
 
+    static async Task SendTextDeltaChunked(HttpContext ctx, string textId, string text, int chunkChars = 140)
+    {
+        if (string.IsNullOrEmpty(text))
+            return;
+
+        if (chunkChars < 20)
+            chunkChars = 20;
+
+        var i = 0;
+        while (i < text.Length)
+        {
+            var take = Math.Min(chunkChars, text.Length - i);
+            var part = text.Substring(i, take);
+            await SendTextDelta(ctx, textId, part);
+            i += take;
+            await Task.Yield();
+        }
+    }
+
     static Task SendTextEnd(HttpContext ctx, string textId)
         => SendData(ctx, $"{{\"type\":\"text-end\",\"id\":\"{JsonEscape(textId)}\"}}");
 

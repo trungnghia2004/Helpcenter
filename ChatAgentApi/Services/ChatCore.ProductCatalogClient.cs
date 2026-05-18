@@ -58,50 +58,90 @@ internal static partial class ChatCore
         var seen = new HashSet<long>();
         var plainQ = RemoveDiacritics(q.ToLowerInvariant());
         var keywords = ExtractSearchKeywords(q);
+        var descriptorKeywords = ExtractDescriptorKeywords(plainQ);
         var strictCategory = ExtractStrictCategoryKeyword(plainQ);
         var strictColor = ExtractStrictColorKeyword(plainQ);
 
-        foreach (var query in BuildSearchQueries(q))
+        // Giới hạn số query để giảm độ trễ: ưu tiên query đầy đủ + 1-2 query phụ.
+        var queryList = BuildSearchQueries(q)
+            .Where(x => !string.IsNullOrWhiteSpace(x))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Take(3)
+            .ToList();
+
+        var fetchTasks = queryList.Select(query => FetchSearchResultArrayAsync(http, baseUrl, query, ct)).ToList();
+        var fetched = await Task.WhenAll(fetchTasks);
+
+        foreach (var arr in fetched.Where(x => x is not null))
         {
-            var url = $"{baseUrl}/api/products/search?q={Uri.EscapeDataString(query)}";
-            var json = await GetJsonWithCacheAsync(
-                cacheKey: $"search:{query.ToLowerInvariant()}",
-                ttl: TimeSpan.FromSeconds(30),
-                fetch: async () =>
-                {
-                    using var resp = await http.GetAsync(url, ct);
-                    if (!resp.IsSuccessStatusCode) return null;
-                    return await resp.Content.ReadAsStringAsync(ct);
-                });
-            if (string.IsNullOrWhiteSpace(json)) continue;
-
-            using var doc = JsonDocument.Parse(json);
-            var arr = doc.RootElement;
-            if (arr.ValueKind != JsonValueKind.Array) continue;
-
-            foreach (var item in arr.EnumerateArray())
+            foreach (var item in arr!)
             {
                 if (!item.TryGetProperty("productID", out var pidEl)) continue;
                 var pid = pidEl.GetInt64();
                 if (!seen.Add(pid)) continue;
                 results.Add(item.Clone());
-                if (results.Count >= 25) break;
+                if (results.Count >= 20) break;
             }
+            if (results.Count >= 20) break;
         }
 
-        var ranked = results
+        var scored = results
             .Select(item => new
             {
                 item,
-                score = ScoreProductForQuery(item, plainQ, keywords, strictCategory, strictColor)
+                score = ScoreProductForQuery(
+                    item,
+                    plainQ,
+                    keywords,
+                    descriptorKeywords,
+                    strictCategory,
+                    strictColor,
+                    out var descriptorHits),
+                descriptorHits
             })
-            .Where(x => x.score > 0)
+            .Where(x => x.score > 0);
+
+        var ranked = scored
+            .Where(x => descriptorKeywords.Count == 0 || x.descriptorHits > 0)
             .OrderByDescending(x => x.score)
             .Take(8)
             .Select(x => x.item)
             .ToList();
 
+        if (ranked.Count == 0 && descriptorKeywords.Count > 0)
+        {
+            ranked = scored
+                .OrderByDescending(x => x.score)
+                .Take(8)
+                .Select(x => x.item)
+                .ToList();
+        }
+
         return ranked;
+    }
+
+    static async Task<List<JsonElement>?> FetchSearchResultArrayAsync(HttpClient http, string baseUrl, string query, CancellationToken ct)
+    {
+        var url = $"{baseUrl}/api/products/search?q={Uri.EscapeDataString(query)}";
+        var json = await GetJsonWithCacheAsync(
+            cacheKey: $"search:{query.ToLowerInvariant()}",
+            ttl: TimeSpan.FromSeconds(30),
+            fetch: async () =>
+            {
+                using var resp = await http.GetAsync(url, ct);
+                if (!resp.IsSuccessStatusCode) return null;
+                return await resp.Content.ReadAsStringAsync(ct);
+            });
+
+        if (string.IsNullOrWhiteSpace(json)) return null;
+
+        using var doc = JsonDocument.Parse(json);
+        var arr = doc.RootElement;
+        if (arr.ValueKind != JsonValueKind.Array) return null;
+
+        return arr.EnumerateArray()
+            .Select(x => x.Clone())
+            .ToList();
     }
 
     static IEnumerable<string> BuildSearchQueries(string q)
@@ -162,6 +202,31 @@ internal static partial class ChatCore
         return keywords;
     }
 
+    static HashSet<string> ExtractDescriptorKeywords(string plainQ)
+    {
+        var stop = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "co", "nhung", "loai", "nao", "san", "pham", "cua", "cho", "toi", "muon",
+            "biet", "con", "khong", "tim", "kiem", "mot", "may", "gia", "la", "bao",
+            "nhieu", "gi", "can", "duoc", "mau", "size", "kich", "co"
+        };
+        var categoryWords = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "ao", "quan", "short", "jean", "hoodie", "thun", "gile", "khoac"
+        };
+
+        var tokens = Regex.Matches(plainQ, @"[\p{L}\p{Nd}]+")
+            .Select(m => m.Value)
+            .Where(t => t.Length >= 3)
+            .Where(t => !stop.Contains(t))
+            .Where(t => !categoryWords.Contains(t))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Take(6)
+            .ToList();
+
+        return tokens.ToHashSet(StringComparer.OrdinalIgnoreCase);
+    }
+
     static string? ExtractCategoryKeyword(string q)
     {
         if (string.IsNullOrWhiteSpace(q)) return null;
@@ -209,7 +274,14 @@ internal static partial class ChatCore
         return null;
     }
 
-    static int ScoreProductForQuery(JsonElement item, string plainQ, HashSet<string> keywords, string? strictCategory, string? strictColor)
+    static int ScoreProductForQuery(
+        JsonElement item,
+        string plainQ,
+        HashSet<string> keywords,
+        HashSet<string> descriptorKeywords,
+        string? strictCategory,
+        string? strictColor,
+        out int descriptorHits)
     {
         var name = item.TryGetProperty("productName", out var n) ? (n.GetString() ?? string.Empty) : string.Empty;
         var category = item.TryGetProperty("categoryName", out var cat) ? (cat.GetString() ?? string.Empty) : string.Empty;
@@ -218,6 +290,7 @@ internal static partial class ChatCore
         var plainCategory = RemoveDiacritics(category.ToLowerInvariant());
         var combined = $"{plainName} {plainCategory}".Trim();
         var score = 0;
+        descriptorHits = 0;
 
         if (!string.IsNullOrWhiteSpace(strictCategory) && !combined.Contains(strictCategory))
             return 0;
@@ -228,6 +301,18 @@ internal static partial class ChatCore
         {
             if (combined.Contains(kw)) score += kw.Contains(' ') ? 4 : 3;
         }
+
+        foreach (var descriptor in descriptorKeywords)
+        {
+            if (combined.Contains(descriptor))
+            {
+                descriptorHits++;
+                score += descriptor.Length >= 5 ? 5 : 3;
+            }
+        }
+
+        if (descriptorKeywords.Count > 1 && descriptorHits == descriptorKeywords.Count)
+            score += 4;
 
         if (!string.IsNullOrWhiteSpace(code) && plainQ.Contains(code.ToLowerInvariant())) score += 6;
         if (score == 0 && keywords.Count == 0) score = 1;
