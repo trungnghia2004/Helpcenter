@@ -12,6 +12,7 @@ internal static partial class ChatCore
 {
     static void SetSseHeaders(HttpContext ctx)
     {
+        ctx.Features.Get<Microsoft.AspNetCore.Http.Features.IHttpResponseBodyFeature>()?.DisableBuffering();
         ctx.Response.Headers.ContentType = "text/event-stream; charset=utf-8";
         ctx.Response.Headers.CacheControl = "no-cache";
         ctx.Response.Headers.Connection = "keep-alive";
@@ -31,7 +32,12 @@ internal static partial class ChatCore
     static Task SendTextDelta(HttpContext ctx, string textId, string delta)
         => SendData(ctx, $"{{\"type\":\"text-delta\",\"id\":\"{JsonEscape(textId)}\",\"delta\":\"{JsonEscape(delta)}\"}}");
 
-    static async Task SendTextDeltaChunked(HttpContext ctx, string textId, string text, int chunkChars = 140)
+    static async Task SendTextDeltaChunked(
+        HttpContext ctx,
+        string textId,
+        string text,
+        int chunkChars = 140,
+        int minDelayMs = 0)
     {
         if (string.IsNullOrEmpty(text))
             return;
@@ -46,7 +52,10 @@ internal static partial class ChatCore
             var part = text.Substring(i, take);
             await SendTextDelta(ctx, textId, part);
             i += take;
-            await Task.Yield();
+            if (minDelayMs > 0 && i < text.Length)
+                await Task.Delay(minDelayMs);
+            else
+                await Task.Yield();
         }
     }
 

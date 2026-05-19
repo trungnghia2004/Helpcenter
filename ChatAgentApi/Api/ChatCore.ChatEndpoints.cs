@@ -119,7 +119,7 @@ internal static partial class ChatCore
 
             await SendStart(ctx, messageIdQuota);
             await SendTextStart(ctx, textIdQuota);
-            await SendTextDeltaChunked(ctx, textIdQuota, text);
+            await SendTextDeltaChunked(ctx, textIdQuota, text, chunkChars: 40, minDelayMs: 14);
             await SendTextEnd(ctx, textIdQuota);
             await SendDone(ctx);
 
@@ -166,7 +166,7 @@ internal static partial class ChatCore
 
             await SendStart(ctx, messageIdClarify);
             await SendTextStart(ctx, textIdClarify);
-            await SendTextDeltaChunked(ctx, textIdClarify, clarify);
+            await SendTextDeltaChunked(ctx, textIdClarify, clarify, chunkChars: 40, minDelayMs: 14);
             await SendTextEnd(ctx, textIdClarify);
             await SendDone(ctx);
 
@@ -198,7 +198,7 @@ internal static partial class ChatCore
 
             await SendStart(ctx, messageIdLocal);
             await SendTextStart(ctx, textIdLocal);
-            await SendTextDeltaChunked(ctx, textIdLocal, answer);
+            await SendTextDeltaChunked(ctx, textIdLocal, answer, chunkChars: 40, minDelayMs: 14);
             await SendTextEnd(ctx, textIdLocal);
             await SendDone(ctx);
 
@@ -380,7 +380,7 @@ internal static partial class ChatCore
 
             await SendStart(ctx, messageIdFast);
             await SendTextStart(ctx, textIdFast);
-            await SendTextDeltaChunked(ctx, textIdFast, answer);
+            await SendTextDeltaChunked(ctx, textIdFast, answer, chunkChars: 40, minDelayMs: 14);
             await SendTextEnd(ctx, textIdFast);
             await SendDone(ctx);
 
@@ -536,7 +536,7 @@ internal static partial class ChatCore
             {
                 var fallback = BuildRateLimitFallbackFromSources(sourcesBlocks);
                 sb.Append(fallback);
-                await SendTextDeltaChunked(ctx, textId, fallback);
+                await SendTextDeltaChunked(ctx, textId, fallback, chunkChars: 40, minDelayMs: 14);
                 chargeTokens = false;
                 usageNote =
                     IsUnauthorizedError(ex) ? "openai_unauthorized_fallback" :
