@@ -1,7 +1,6 @@
 <Project>
   <PropertyGroup>
-    <UseArtifactsOutput>true</UseArtifactsOutput>
-    <ArtifactsPath>runtime\build\</ArtifactsPath>
+    <UseArtifactsOutput>false</UseArtifactsOutput>
     <DefaultItemExcludes>$(DefaultItemExcludes);runtime\**</DefaultItemExcludes>
   </PropertyGroup>
 </Project>

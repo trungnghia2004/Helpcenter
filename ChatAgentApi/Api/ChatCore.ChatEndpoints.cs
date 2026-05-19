@@ -73,14 +73,28 @@ internal static partial class ChatCore
         var openAiEmbedModel = runtime.Options.OpenAiEmbedModel;
         var agentPolicy = runtime.AgentPolicy;
         var dailyTokenQuota = runtime.Options.DailyTokenQuota;
+        var forceGptForAll = true;
 
         var req = await ParseIncomingChatRequestAsync(ctx.Request, ctx.RequestAborted);
         var requestStarted = DateTime.UtcNow;
-        var requesterKey = BuildRequesterKey(req, ctx);
-        var overQuota = IsDailyQuotaExceeded(requesterKey, dailyTokenQuota, out var usedToday);
 
         var openAiHttp = httpClientFactory.CreateClient("openai");
         var laravelHttp = httpClientFactory.CreateClient("laravel");
+
+        var auth = await TryAuthenticateUserAsync(ctx.Request, laravelHttp, laravelBase, ctx.RequestAborted);
+        if (!auth.ok || string.IsNullOrWhiteSpace(auth.userKey))
+        {
+            ctx.Response.StatusCode = StatusCodes.Status401Unauthorized;
+            await ctx.Response.WriteAsJsonAsync(new
+            {
+                error = "unauthorized",
+                message = "Vui lòng đăng nhập để sử dụng hỗ trợ."
+            }, ctx.RequestAborted);
+            return;
+        }
+
+        var requesterKey = auth.userKey!;
+        var overQuota = IsDailyQuotaExceeded(requesterKey, dailyTokenQuota, out var usedToday);
 
         var conversationId = string.IsNullOrWhiteSpace(req.ConversationId)
             ? Guid.NewGuid().ToString("N")
@@ -158,7 +172,7 @@ internal static partial class ChatCore
         var localKnowledgeFast = TryGetLocalKnowledgeAnswer(lastUser, knowledgeDir);
         var hasExplicitProductCode = ExtractProductCode(lastUser) is not null;
 
-        if (shortAffirmative && string.IsNullOrWhiteSpace(effectiveRecentProductCode))
+        if (!forceGptForAll && shortAffirmative && string.IsNullOrWhiteSpace(effectiveRecentProductCode))
         {
             var messageIdClarify = "m_" + Guid.NewGuid().ToString("N");
             var textIdClarify = "t_" + Guid.NewGuid().ToString("N");
@@ -190,7 +204,7 @@ internal static partial class ChatCore
             return;
         }
 
-        if (!string.IsNullOrWhiteSpace(localKnowledgeFast) && !hasExplicitProductCode)
+        if (!forceGptForAll && !string.IsNullOrWhiteSpace(localKnowledgeFast) && !hasExplicitProductCode)
         {
             var messageIdLocal = "m_" + Guid.NewGuid().ToString("N");
             var textIdLocal = "t_" + Guid.NewGuid().ToString("N");
@@ -367,12 +381,12 @@ internal static partial class ChatCore
             }
         }
 
-        if (isProductQuery && string.IsNullOrWhiteSpace(fastProductAnswer))
+        if (!forceGptForAll && isProductQuery && string.IsNullOrWhiteSpace(fastProductAnswer))
         {
             fastProductAnswer = "Mình chưa xác định được sản phẩm cụ thể. Bạn gửi thêm mã sản phẩm (VD: AT0009) hoặc tên chi tiết hơn nhé.";
         }
 
-        if (isProductQuery && !string.IsNullOrWhiteSpace(fastProductAnswer))
+        if (!forceGptForAll && isProductQuery && !string.IsNullOrWhiteSpace(fastProductAnswer))
         {
             var messageIdFast = "m_" + Guid.NewGuid().ToString("N");
             var textIdFast = "t_" + Guid.NewGuid().ToString("N");
@@ -403,6 +417,17 @@ internal static partial class ChatCore
                     Note = "product_fast_path"
                 });
             return;
+        }
+
+        if (forceGptForAll && isProductQuery && !string.IsNullOrWhiteSpace(fastProductAnswer))
+        {
+            if (!sourcesBlocks.Any(x => string.Equals(x, fastProductAnswer, StringComparison.Ordinal)))
+                sourcesBlocks.Add(fastProductAnswer);
+        }
+        if (shortAffirmative && !string.IsNullOrWhiteSpace(effectiveRecentProductCode))
+        {
+            sourcesBlocks.Add(
+                $"FOLLOWUP_VARIANTS_REQUIRED: user_confirmed=co; product_code={effectiveRecentProductCode}; must_return=size_color_stock; do_not_ask_product_again");
         }
 
         if (kb.Chunks.Count > 0 && !string.IsNullOrWhiteSpace(lastUser))
@@ -490,6 +515,12 @@ internal static partial class ChatCore
         Action<AgentToolCallLog> toolLogger = log => AppendAgentToolCallLog(agentToolLogPath, log);
         Action<AgentStepLog> stepLogger = log => AppendAgentStepLog(agentStepLogPath, log);
         var plannerHint = BuildPlannerHint(lastUser);
+        if (shortAffirmative && !string.IsNullOrWhiteSpace(effectiveRecentProductCode))
+        {
+            plannerHint =
+                $"Bat buoc goi get_product_variants_by_code cho ma {effectiveRecentProductCode}. " +
+                "Tra ve size/mau/ton kho. Khong hoi lai user ve ten san pham.";
+        }
         var agentContext = new AgentExecutionContext(
             OpenAiHttp: openAiHttp,
             LaravelHttp: laravelHttp,
@@ -702,6 +733,116 @@ internal static partial class ChatCore
         if (string.IsNullOrWhiteSpace(requesterKey) || string.IsNullOrWhiteSpace(productCode))
             return;
         RecentProductByRequester[requesterKey] = new RecentProductHint(productCode.Trim().ToUpperInvariant(), DateTime.UtcNow);
+    }
+
+    static async Task<(bool ok, string? userKey)> TryAuthenticateUserAsync(
+        HttpRequest request,
+        HttpClient laravelHttp,
+        string laravelBase,
+        CancellationToken ct)
+    {
+        var forwardedUserId = request.Headers["x-user-id"].ToString().Trim();
+        if (!string.IsNullOrWhiteSpace(forwardedUserId))
+            return (true, $"user:{forwardedUserId}");
+
+        var token = ExtractBearerToken(request);
+        if (!string.IsNullOrWhiteSpace(token))
+        {
+            if (AuthTokenCache.TryGetValue(token, out var hit) && hit.ExpiresAtUtc > DateTime.UtcNow)
+                return (true, hit.UserKey);
+
+            var byToken = await ValidateBearerAsync(laravelHttp, laravelBase, token, ct);
+            if (byToken.ok && !string.IsNullOrWhiteSpace(byToken.userKey))
+            {
+                AuthTokenCache[token] = new AuthUserHint(byToken.userKey!, DateTime.UtcNow.AddMinutes(5));
+                return byToken;
+            }
+        }
+
+        var cookieHeader = request.Headers["Cookie"].ToString();
+        if (!string.IsNullOrWhiteSpace(cookieHeader))
+        {
+            var byCookie = await ValidateSessionCookieAsync(laravelHttp, laravelBase, cookieHeader, ct);
+            if (byCookie.ok)
+                return byCookie;
+        }
+
+        return (false, null);
+    }
+
+    static async Task<(bool ok, string? userKey)> ValidateBearerAsync(
+        HttpClient laravelHttp,
+        string laravelBase,
+        string token,
+        CancellationToken ct)
+    {
+        using var req = new HttpRequestMessage(HttpMethod.Get, $"{laravelBase}/api/user");
+        req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+
+        using var resp = await laravelHttp.SendAsync(req, ct);
+        if (!resp.IsSuccessStatusCode)
+            return (false, null);
+
+        var body = await resp.Content.ReadAsStringAsync(ct);
+        return ParseUserKeyFromJson(body);
+    }
+
+    static async Task<(bool ok, string? userKey)> ValidateSessionCookieAsync(
+        HttpClient laravelHttp,
+        string laravelBase,
+        string cookieHeader,
+        CancellationToken ct)
+    {
+        using var req = new HttpRequestMessage(HttpMethod.Get, $"{laravelBase}/chat-auth/me");
+        req.Headers.Add("Cookie", cookieHeader);
+        req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+
+        using var resp = await laravelHttp.SendAsync(req, ct);
+        if (!resp.IsSuccessStatusCode)
+            return (false, null);
+
+        var body = await resp.Content.ReadAsStringAsync(ct);
+        return ParseUserKeyFromJson(body);
+    }
+
+    static (bool ok, string? userKey) ParseUserKeyFromJson(string body)
+    {
+        if (string.IsNullOrWhiteSpace(body))
+            return (false, null);
+
+        try
+        {
+            using var doc = JsonDocument.Parse(body);
+            var root = doc.RootElement;
+            string? id = null;
+            if (root.TryGetProperty("id", out var idEl))
+                id = idEl.ToString();
+            else if (root.TryGetProperty("userId", out var uidEl))
+                id = uidEl.ToString();
+
+            if (string.IsNullOrWhiteSpace(id))
+                return (false, null);
+
+            return (true, $"user:{id}");
+        }
+        catch
+        {
+            return (false, null);
+        }
+    }
+
+    static string? ExtractBearerToken(HttpRequest request)
+    {
+        if (!request.Headers.TryGetValue("Authorization", out var authValues))
+            return null;
+        var auth = authValues.ToString().Trim();
+        if (string.IsNullOrWhiteSpace(auth)) return null;
+        const string prefix = "Bearer ";
+        if (!auth.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+            return null;
+        var token = auth[prefix.Length..].Trim();
+        return string.IsNullOrWhiteSpace(token) ? null : token;
     }
 
     static string BuildPlannerHint(string userText)

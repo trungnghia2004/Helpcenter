@@ -9,6 +9,20 @@ const form = document.getElementById("form");
 const input = document.getElementById("input");
 let currentBotStart = -1;
 
+function getAuthToken() {
+  const keys = ["auth_token", "access_token", "token"];
+  for (const k of keys) {
+    const v = localStorage.getItem(k) || sessionStorage.getItem(k);
+    if (v && v.trim()) return v.trim();
+  }
+  return null;
+}
+
+function renderAuthRequired() {
+  chat.textContent = "Vui lòng đăng nhập để sử dụng hỗ trợ.";
+  if (form) form.style.display = "none";
+}
+
 function write(t) {
   chat.textContent += t;
   chat.scrollTop = chat.scrollHeight;
@@ -42,6 +56,11 @@ function finalizeCurrentBotMessage() {
 
 form.addEventListener("submit", async (e) => {
   e.preventDefault();
+  const authToken = getAuthToken();
+  if (!authToken) {
+    renderAuthRequired();
+    return;
+  }
 
   const q = input.value.trim();
   if (!q) return;
@@ -52,16 +71,42 @@ form.addEventListener("submit", async (e) => {
 
   const res = await fetch("/api/chat", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${authToken}`
+    },
     body: JSON.stringify({
       conversationId,
       messages: [{ role: "user", content: q }]
     })
   });
 
+  if (res.status === 401) {
+    let msg = "Vui lòng đăng nhập để sử dụng hỗ trợ.";
+    try {
+      const data = await res.json();
+      if (data && typeof data.message === "string" && data.message.trim()) {
+        msg = data.message.trim();
+      }
+    } catch {}
+    write("\n" + msg);
+    renderAuthRequired();
+    finalizeCurrentBotMessage();
+    return;
+  }
+
   if (!res.ok) {
-    const txt = await res.text().catch(() => "");
-    write(`\n[HTTP ${res.status}] ${txt}`);
+    let msg = `HTTP ${res.status}`;
+    try {
+      const data = await res.json();
+      if (data && typeof data.message === "string" && data.message.trim()) {
+        msg = data.message.trim();
+      }
+    } catch {
+      const txt = await res.text().catch(() => "");
+      if (txt) msg = txt;
+    }
+    write("\n" + msg);
     finalizeCurrentBotMessage();
     return;
   }
@@ -105,3 +150,7 @@ form.addEventListener("submit", async (e) => {
 
   finalizeCurrentBotMessage();
 });
+
+if (!getAuthToken()) {
+  renderAuthRequired();
+}

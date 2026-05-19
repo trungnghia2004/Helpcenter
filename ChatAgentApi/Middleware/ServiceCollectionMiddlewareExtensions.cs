@@ -13,7 +13,12 @@ internal static class ServiceCollectionMiddlewareExtensions
             cors.AddPolicy(MiddlewarePolicyNames.CorsPolicyName, policy => policy
                 .AllowAnyHeader()
                 .AllowAnyMethod()
-                .AllowAnyOrigin());
+                .WithOrigins(
+                    "http://127.0.0.1:8000",
+                    "http://localhost:8000",
+                    "http://127.0.0.1:5000",
+                    "http://localhost:5000")
+                .AllowCredentials());
         });
 
         services.AddProblemDetails(problem =>

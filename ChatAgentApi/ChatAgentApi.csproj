@@ -15,5 +15,14 @@
     <PackageReference Include="Microsoft.SemanticKernel" Version="1.73.0" />
     <PackageReference Include="Microsoft.SemanticKernel.Connectors.OpenAI" Version="1.73.0" />
   </ItemGroup>
+
+  <ItemGroup>
+    <!-- Exclude generated runtime build artifacts from source compilation -->
+    <Compile Remove="runtime/**/*.cs" />
+    <Compile Remove="**/runtime/**/*.cs" />
+    <EmbeddedResource Remove="runtime/**" />
+    <None Remove="runtime/**/*.cs" />
+    <None Remove="**/runtime/**/*.cs" />
+  </ItemGroup>
   
 </Project>

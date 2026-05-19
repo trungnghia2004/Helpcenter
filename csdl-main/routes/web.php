@@ -72,6 +72,20 @@ Route::get('/', [\App\Http\Controllers\DisplayProductController::class, 'custome
 
 
 Route::middleware(['auth'])->group(function () {
+    Route::get('/chat-auth/me', function (\Illuminate\Http\Request $request) {
+        $user = $request->user();
+        if (!$user) {
+            return response()->json(['ok' => false], 401);
+        }
+
+        return response()->json([
+            'ok' => true,
+            'id' => $user->id,
+            'name' => $user->name ?? null,
+            'email' => $user->email ?? null,
+        ]);
+    })->name('chat.auth.me');
+
     Route::get('/profile', [ProfileController::class, 'edit'])->name('profile.edit');
     Route::post('/profile/update', [ProfileController::class, 'update'])->name('profile.update');
     Route::post('/profile/updatePassword', [ProfileController::class, 'updatePassword'])->name('profile.updatePassword');

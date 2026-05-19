@@ -1,4 +1,4 @@
-(function () {
+﻿(function () {
   const SAME_ORIGIN_API = window.location.origin.replace(/\/+$/, "") + "/api/chat";
 
   const DEFAULT_CHAT_API_CANDIDATES = [
@@ -16,6 +16,33 @@
 
   let conversationId = null;
   let isOpen = false;
+  let currentUserId = null;
+  let currentBotStart = -1;
+
+  function getAuthToken() {
+    const keys = ["auth_token", "access_token", "token"];
+    for (const k of keys) {
+      const v = localStorage.getItem(k) || sessionStorage.getItem(k);
+      if (v && String(v).trim()) return String(v).trim();
+    }
+    return null;
+  }
+
+  async function getSessionUser() {
+    try {
+      const res = await fetch("/chat-auth/me", {
+        method: "GET",
+        credentials: "include",
+        headers: { "Accept": "application/json" }
+      });
+      if (!res.ok) return null;
+      const data = await res.json().catch(() => null);
+      if (!data || !data.ok || data.id == null) return null;
+      return data;
+    } catch {
+      return null;
+    }
+  }
 
   function el(tag, attrs = {}, children = []) {
     const e = document.createElement(tag);
@@ -33,6 +60,33 @@
     logEl.scrollTop = logEl.scrollHeight;
   }
 
+  function normalizeBotText(text) {
+    if (!text) return text;
+    return text
+      .replace(/(\d(?:,\d{3})*\s*VND)\s*-\s*/g, "$1\n- ")
+      .replace(/(VND)\s*(Bạn muốn|Ban muon)/g, "$1\n$2")
+      .replace(/(sản phẩm)\s*-\s*Size/gi, "$1\n- Size");
+  }
+
+  function finalizeCurrentBotMessage(logEl) {
+    if (currentBotStart < 0) return;
+    const all = logEl.textContent || "";
+    if (currentBotStart > all.length) {
+      currentBotStart = -1;
+      return;
+    }
+
+    const before = all.slice(0, currentBotStart);
+    const botText = all.slice(currentBotStart);
+    const normalized = normalizeBotText(botText);
+    if (normalized !== botText) {
+      logEl.textContent = before + normalized;
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+
+    currentBotStart = -1;
+  }
+
   function uniq(values) {
     const seen = new Set();
     const result = [];
@@ -46,7 +100,7 @@
     return result;
   }
 
-  async function fetchChatWithFallback(payload) {
+  async function fetchChatWithFallback(payload, token) {
     const urls = uniq(CHAT_API_CANDIDATES);
     let lastError = null;
 
@@ -54,12 +108,18 @@
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 20000);
       try {
+        const headers = { "Content-Type": "application/json" };
+        if (token && token.trim()) headers["Authorization"] = `Bearer ${token}`;
+        if (payload && payload.userId) headers["x-user-id"] = String(payload.userId);
+
         const res = await fetch(url, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers,
+          credentials: "include",
           body: JSON.stringify(payload),
           signal: controller.signal
         });
+
         clearTimeout(timeout);
         if (res.ok) return { res, url };
 
@@ -123,19 +183,27 @@
 
     form.addEventListener("submit", async (e) => {
       e.preventDefault();
+      const authToken = getAuthToken();
+      const sessionUser = await getSessionUser();
+      if (!authToken && !sessionUser) return;
+      const userId = sessionUser && sessionUser.id != null ? String(sessionUser.id) : (currentUserId || "");
+      if (userId) currentUserId = userId;
+
       const q = input.value.trim();
       if (!q) return;
       input.value = "";
 
       write(log, "\n\nBan: " + q + "\nBot: ");
+      currentBotStart = log.textContent.length;
 
       let res;
       let usedUrl = "";
       try {
         const r = await fetchChatWithFallback({
           conversationId,
-          messages: [{ role: "user", content: q }]
-        });
+          messages: [{ role: "user", content: q }],
+          userId: currentUserId || undefined
+        }, authToken);
         res = r.res;
         usedUrl = r.url;
       } catch (err) {
@@ -143,12 +211,25 @@
         write(log, "\n- Da thu: " + uniq(CHAT_API_CANDIDATES).join(" | "));
         write(log, "\n- Loi: " + (err && err.message ? err.message : String(err)));
         write(log, "\n- Kiem tra backend C# dang chay va mo cong 5000.");
+        finalizeCurrentBotMessage(log);
         return;
       }
 
       if (!res.ok) {
+        let jsonMessage = "";
+        try {
+          const data = await res.json();
+          jsonMessage = data && typeof data.message === "string" ? data.message.trim() : "";
+        } catch {}
+
+        if (res.status === 401) {
+          write(log, "\n" + (jsonMessage || "Vui long dang nhap de su dung ho tro."));
+          finalizeCurrentBotMessage(log);
+          return;
+        }
+
         const txt = await res.text().catch(() => "");
-        const compact = (txt || "").replace(/\s+/g, " ").trim();
+        const compact = (txt || jsonMessage || "").replace(/\s+/g, " ").trim();
         const preview = compact.slice(0, 360);
         if (compact.toLowerCase().includes("<!doctype html")) {
           write(log, `\n[HTTP ${res.status}] API URL dang tro sai server/route.`);
@@ -157,6 +238,7 @@
         } else {
           write(log, `\n[HTTP ${res.status}] ${preview}`);
         }
+        finalizeCurrentBotMessage(log);
         return;
       }
 
@@ -167,6 +249,7 @@
 
       if (!res.body || !res.body.getReader) {
         write(log, "\n[Loi] Trinh duyet khong ho tro stream response.");
+        finalizeCurrentBotMessage(log);
         return;
       }
 
@@ -188,7 +271,10 @@
               if (!line.startsWith("data:")) continue;
 
               const data = line.slice(5).trim();
-              if (data === "[DONE]") return;
+              if (data === "[DONE]") {
+                finalizeCurrentBotMessage(log);
+                return;
+              }
 
               let part;
               try {
@@ -208,13 +294,24 @@
       } catch (err) {
         write(log, "\n[Loi stream] " + (err && err.message ? err.message : String(err)));
         if (usedUrl) write(log, "\n(API: " + usedUrl + ")");
+      } finally {
+        finalizeCurrentBotMessage(log);
       }
     });
   }
 
-  if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", mount);
-  } else {
-    mount();
+  async function bootstrap() {
+    const token = getAuthToken();
+    const sessionUser = await getSessionUser();
+    if (!token && !sessionUser) return;
+    if (sessionUser && sessionUser.id != null) currentUserId = String(sessionUser.id);
+
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", mount);
+    } else {
+      mount();
+    }
   }
+
+  bootstrap();
 })();
