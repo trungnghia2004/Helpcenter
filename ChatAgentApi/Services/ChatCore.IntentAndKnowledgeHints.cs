@@ -298,18 +298,80 @@ internal static partial class ChatCore
 
     static string? ExtractRecentProductCode(Conversation conv)
     {
+        if (conv.MemoryFacts.TryGetValue("product_code", out var memCode) &&
+            !string.IsNullOrWhiteSpace(memCode))
+            return memCode.Trim().ToUpperInvariant();
+
         for (int i = conv.Messages.Count - 1; i >= 0; i--)
         {
-            var code = ExtractProductCode(conv.Messages[i].Content);
+            var msg = conv.Messages[i];
+            var code = ExtractProductCodeForContext(msg.Content, msg.Role);
             if (!string.IsNullOrWhiteSpace(code))
                 return code;
         }
 
-        if (conv.MemoryFacts.TryGetValue("product_code", out var memCode) &&
-            !string.IsNullOrWhiteSpace(memCode))
-            return memCode;
+        return null;
+    }
+
+    static string? ExtractProductCodeForContext(string? text, string? role)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return null;
+
+        var normalizedRole = (role ?? string.Empty).Trim().ToLowerInvariant();
+
+        if (normalizedRole == "user")
+            return ExtractProductCodeIgnoreExamples(text);
+
+        if (normalizedRole == "assistant" && LooksLikeProductPayload(text))
+            return ExtractProductCodeIgnoreExamples(text);
 
         return null;
+    }
+
+    static string? ExtractProductCodeIgnoreExamples(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return null;
+
+        var matches = Regex.Matches(text.ToUpperInvariant(), @"\b[A-Z]{2}\d{3,5}\b");
+        foreach (Match match in matches)
+        {
+            if (!match.Success) continue;
+            if (IsExampleCodeContext(text, match.Index)) continue;
+            return match.Value;
+        }
+
+        return null;
+    }
+
+    static bool IsExampleCodeContext(string text, int codeStartIndex)
+    {
+        if (string.IsNullOrWhiteSpace(text) || codeStartIndex < 0)
+            return false;
+
+        var start = Math.Max(0, codeStartIndex - 12);
+        var len = Math.Min(12, codeStartIndex);
+        if (len <= 0) return false;
+
+        var prefix = RemoveDiacritics(text.Substring(start, len).ToLowerInvariant());
+        return prefix.Contains("vd", StringComparison.Ordinal) ||
+               prefix.Contains("vi du", StringComparison.Ordinal);
+    }
+
+    static bool LooksLikeProductPayload(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return false;
+
+        var plain = RemoveDiacritics(text.ToLowerInvariant());
+
+        return plain.Contains("productid", StringComparison.Ordinal) ||
+               plain.Contains("ma:", StringComparison.Ordinal) ||
+               plain.Contains("ten:", StringComparison.Ordinal) ||
+               plain.Contains("gia:", StringComparison.Ordinal) ||
+               plain.Contains("vnd", StringComparison.Ordinal) ||
+               plain.Contains("|", StringComparison.Ordinal);
     }
 }
 

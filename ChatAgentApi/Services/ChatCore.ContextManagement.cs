@@ -261,7 +261,7 @@ internal static partial class ChatCore
             if (string.IsNullOrWhiteSpace(text)) continue;
             var lower = text.ToLowerInvariant();
 
-            var code = ExtractProductCode(text);
+            var code = ExtractProductCodeForContext(text, msg.Role);
             if (!string.IsNullOrWhiteSpace(code)) lastCode = code;
 
             var sizeMatch = Regex.Match(lower, @"\bsize\s*([a-z0-9]{1,4})\b");
