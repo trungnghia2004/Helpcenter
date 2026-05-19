@@ -273,7 +273,7 @@ internal static partial class ChatCore
                     !string.IsNullOrWhiteSpace(categoryKeyword);
                 var code = ExtractProductCode(lastUser)
                     ?? (needVariants
-                        ? (ExtractRecentProductCode(conv) ?? (shortAffirmative ? recentRequesterProductCode : null))
+                        ? (ExtractRecentProductCode(conv) ?? recentRequesterProductCode)
                         : null);
 
                 if (categoryOverviewIntent && string.IsNullOrWhiteSpace(code))
