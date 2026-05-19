@@ -82,8 +82,6 @@
 
         <nav class="hidden md:flex space-x-8">
             <a href="/" class="nav-link text-gray-700 hover:text-orange-500 font-medium">Trang chủ</a>
-            <a href="/products/gender/0" class="nav-link text-gray-700 hover:text-orange-500 font-medium">Nam</a>
-            <a href="/products/gender/1" class="nav-link text-gray-700 hover:text-orange-500 font-medium">Nữ</a>
             <a href="/showProduct" class="nav-link text-gray-700 hover:text-orange-500 font-medium">Sản phẩm</a>
         </nav>
 
