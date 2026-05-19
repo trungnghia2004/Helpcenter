@@ -160,9 +160,9 @@ internal static partial class ChatCore
         var lastUser = conv.Messages.LastOrDefault(m => m.Role == "user")?.Content?.Trim() ?? "";
         var recentConversationProductCode = ExtractRecentProductCode(conv);
         var shortAffirmative = IsShortAffirmative(lastUser);
-        var recentRequesterProductCode = shortAffirmative
-            ? TryGetRequesterRecentProductCode(requesterKey, maxAge: TimeSpan.FromMinutes(5))
-            : null;
+        var recentRequesterProductCode = TryGetRequesterRecentProductCode(
+            requesterKey,
+            maxAge: TimeSpan.FromMinutes(30));
         var effectiveRecentProductCode = !string.IsNullOrWhiteSpace(recentConversationProductCode)
             ? recentConversationProductCode
             : recentRequesterProductCode;
