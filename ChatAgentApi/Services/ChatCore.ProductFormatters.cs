@@ -13,12 +13,13 @@ internal static partial class ChatCore
     static string FormatProduct(JsonElement p)
     {
         var id = p.TryGetProperty("productID", out var pid) ? pid.GetInt64() : 0;
-        var code = p.TryGetProperty("productCode", out var c) ? c.GetString() : "";
-        var name = p.TryGetProperty("productName", out var n) ? n.GetString() : "";
+        var code = ReadStringProperty(p, "productCode", "code", "product_code");
+        var name = ReadStringProperty(p, "productName", "name", "product_name");
         var price = p.TryGetProperty("productSellPrice", out var pr) ? ReadDecimalFlexible(pr) : 0m;
-        var desc = p.TryGetProperty("productDesc", out var d) ? d.GetString() : "";
+        var desc = ReadStringProperty(p, "productDesc", "description", "desc", "product_description");
 
         if (!string.IsNullOrWhiteSpace(desc) && desc.Length > 280) desc = desc[..280] + "...";
+        if (string.IsNullOrWhiteSpace(desc)) desc = "(chưa có mô tả từ nguồn dữ liệu)";
 
         return
             "LIVE PRODUCT DATA:\n" +
@@ -27,6 +28,20 @@ internal static partial class ChatCore
             $"- Tên: {name}\n" +
             $"- Giá: {price:N0} VND\n" +
             $"- Mô tả: {desc}\n";
+    }
+
+    static string ReadStringProperty(JsonElement source, params string[] keys)
+    {
+        foreach (var key in keys)
+        {
+            if (source.TryGetProperty(key, out var value))
+            {
+                var text = value.GetString();
+                if (!string.IsNullOrWhiteSpace(text))
+                    return text;
+            }
+        }
+        return string.Empty;
     }
 
     static string FormatProductList(List<JsonElement> products, int maxItems = 5)

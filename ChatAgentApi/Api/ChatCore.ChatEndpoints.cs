@@ -331,7 +331,26 @@ internal static partial class ChatCore
                     }
 
                     if (products.Count > 0)
-                        product = products[0];
+                    {
+                        // Search result may not include full fields (e.g., productDesc),
+                        // so hydrate details by code when possible.
+                        var first = products[0];
+                        var firstCode = first.TryGetProperty("productCode", out var codeEl)
+                            ? codeEl.GetString()
+                            : null;
+                        if (!string.IsNullOrWhiteSpace(firstCode))
+                        {
+                            product = await GetProductByCodeAsync(
+                                laravelHttp,
+                                laravelBase,
+                                firstCode!,
+                                ctx.RequestAborted) ?? first;
+                        }
+                        else
+                        {
+                            product = first;
+                        }
+                    }
                 }
 
                 if (browseIntent && products is { Count: > 1 } && string.IsNullOrWhiteSpace(code))
