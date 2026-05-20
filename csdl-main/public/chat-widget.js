@@ -15,6 +15,7 @@
     : DEFAULT_CHAT_API_CANDIDATES;
 
   const CONVERSATION_STORAGE_KEY = "ai_chat_conversation_id";
+  const CHAT_LOG_STORAGE_KEY = "ai_chat_log_text";
   let conversationId = localStorage.getItem(CONVERSATION_STORAGE_KEY) || null;
   let isOpen = false;
   let currentUserId = null;
@@ -59,6 +60,9 @@
   function write(logEl, text) {
     logEl.textContent += text;
     logEl.scrollTop = logEl.scrollHeight;
+    try {
+      localStorage.setItem(CHAT_LOG_STORAGE_KEY, logEl.textContent || "");
+    } catch {}
   }
 
   function normalizeBotText(text) {
@@ -154,6 +158,13 @@
     header.appendChild(closeBtn);
 
     const log = el("div", { id: "ai-chat-log" });
+    try {
+      const saved = localStorage.getItem(CHAT_LOG_STORAGE_KEY) || "";
+      if (saved) {
+        log.textContent = saved;
+        log.scrollTop = log.scrollHeight;
+      }
+    } catch {}
     const form = el("form", { id: "ai-chat-form" });
     const input = el("input", {
       id: "ai-chat-input",
