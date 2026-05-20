@@ -144,10 +144,10 @@
   }
 
   function mount() {
-    const btn = el("button", { id: "ai-chat-btn", text: "Chat ho tro" });
+    const btn = el("button", { id: "ai-chat-btn", text: "Chat hỗ trợ" });
     const box = el("div", { id: "ai-chat-box" });
     const header = el("div", { id: "ai-chat-header" });
-    header.appendChild(el("div", { text: "Ho tro cua hang" }));
+    header.appendChild(el("div", { text: "Hỗ trợ cửa hàng" }));
 
     const closeBtn = el("button", { id: "ai-chat-close", text: "x" });
     header.appendChild(closeBtn);
@@ -157,10 +157,10 @@
     const input = el("input", {
       id: "ai-chat-input",
       type: "text",
-      placeholder: "Nhap cau hoi...",
+      placeholder: "Nhập câu hỏi...",
       autocomplete: "off"
     });
-    const send = el("button", { id: "ai-chat-send", type: "submit", text: "Gui" });
+    const send = el("button", { id: "ai-chat-send", type: "submit", text: "Gửi" });
 
     form.appendChild(input);
     form.appendChild(send);

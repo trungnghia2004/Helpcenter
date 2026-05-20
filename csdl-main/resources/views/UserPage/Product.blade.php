@@ -6,6 +6,8 @@
     <title>Sản phẩm - TrendyTeen</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="stylesheet" href="{{asset('css/customer/customerPage.css')}}">
+    <link rel="stylesheet" href="{{ asset('chat-widget.css') }}">
+    <script defer src="{{ asset('chat-widget.js') }}"></script>
 
     <script>
         tailwind.config = {
