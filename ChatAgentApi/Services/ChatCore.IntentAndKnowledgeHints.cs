@@ -57,39 +57,6 @@ internal static partial class ChatCore
         if (WantsDetailedAnswer(query))
             return content;
 
-        if (string.Equals(file, "account.md", StringComparison.OrdinalIgnoreCase))
-        {
-            var plain = RemoveDiacritics(query.ToLowerInvariant());
-            if (plain.Contains("chinh sach bao mat") || plain.Contains("bao mat"))
-            {
-                return
-                    "Về bảo mật tài khoản:\n" +
-                    "- Mật khẩu được quản lý trong mục Hồ sơ > Đổi mật khẩu.\n" +
-                    "- Nếu quên mật khẩu, dùng chức năng Quên mật khẩu ở trang đăng nhập.\n" +
-                    "- Nên dùng mật khẩu mạnh và không chia sẻ OTP/mã xác thực.\n\n" +
-                    "Nếu bạn cần chính sách bảo mật dữ liệu chi tiết, vui lòng liên hệ CSKH để được cung cấp bản đầy đủ.";
-            }
-
-            return
-                "Bạn có thể đổi mật khẩu như sau:\n" +
-                "- Đăng nhập tài khoản.\n" +
-                "- Vào Hồ sơ (Profile) > Đổi mật khẩu.\n" +
-                "- Nhập mật khẩu cũ và mật khẩu mới.\n" +
-                "- Bấm Lưu.\n\n" +
-                "Nếu quên mật khẩu: ở màn hình đăng nhập chọn Quên mật khẩu và làm theo hướng dẫn gửi về email/số điện thoại.";
-        }
-
-        if (string.Equals(file, "ordering.md", StringComparison.OrdinalIgnoreCase))
-        {
-            return
-                "Cách đặt hàng:\n" +
-                "1. Chọn sản phẩm, size/màu và thêm vào giỏ hàng.\n" +
-                "2. Vào giỏ hàng, kiểm tra số lượng/sản phẩm.\n" +
-                "3. Nhập thông tin nhận hàng.\n" +
-                "4. Chọn phương thức thanh toán và xác nhận đặt hàng.\n" +
-                "5. Theo dõi trạng thái trong mục Đơn hàng của tôi.";
-        }
-
         var lines = content
             .Split('\n')
             .Select(x => x.Trim())
@@ -374,5 +341,4 @@ internal static partial class ChatCore
                plain.Contains("|", StringComparison.Ordinal);
     }
 }
-
 

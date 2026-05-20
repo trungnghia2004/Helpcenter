@@ -129,7 +129,7 @@ internal static partial class ChatCore
         {
             var messageIdQuota = "m_" + Guid.NewGuid().ToString("N");
             var textIdQuota = "t_" + Guid.NewGuid().ToString("N");
-            var text = $"B?n d� d�ng h?t quota token trong ng�y ({usedToday:N0}/{dailyTokenQuota:N0}). Vui l�ng th? l?i v�o ng�y mai.";
+            var text = $"Bạn đã dùng hết quota token trong ngày ({usedToday:N0}/{dailyTokenQuota:N0}). Vui lòng thử lại vào ngày mai.";
 
             await SendStart(ctx, messageIdQuota);
             await SendTextStart(ctx, textIdQuota);
@@ -496,7 +496,7 @@ internal static partial class ChatCore
         if (sourcesBlocks.Count == 0)
         {
             sourcesBlocks.Add(
-                "NO_PRELOADED_SOURCE: Khong tim thay nguon tien xu ly. Agent bat buoc can nhac goi tool store truoc khi ket luan thieu du lieu.");
+                "NO_PRELOADED_SOURCE: Không tim thấy thông tin liên quan trong tài liệu/nguồn dữ liệu của cửa hàng.");
         }
 
         var baseRules =
