@@ -1,4 +1,4 @@
-﻿# Tài khoản & Bảo mật
+# Tài khoản
 
 ## Cách đổi mật khẩu
 1. Đăng nhập tài khoản.

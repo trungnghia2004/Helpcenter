@@ -30,7 +30,7 @@ internal static partial class ChatCore
         else if (plain.Contains("cach mua hang") || plain.Contains("cach dat hang") || plain.Contains("huong dan mua") || plain.Contains("mua hang") || plain.Contains("dat hang"))
             file = "ordering.md";
         else if (plain.Contains("bao mat") || plain.Contains("chinh sach bao mat"))
-            file = "account.md";
+            file = "privacy-policy.md";
         else if (plain.Contains("doi mat khau") || plain.Contains("quen mat khau") || plain.Contains("mat khau") || plain.Contains("tai khoan") || plain.Contains("dang nhap"))
             file = "account.md";
 
@@ -341,4 +341,3 @@ internal static partial class ChatCore
                plain.Contains("|", StringComparison.Ordinal);
     }
 }
-
