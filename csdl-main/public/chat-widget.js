@@ -14,7 +14,8 @@
     ? [configuredApi].concat(DEFAULT_CHAT_API_CANDIDATES)
     : DEFAULT_CHAT_API_CANDIDATES;
 
-  let conversationId = null;
+  const CONVERSATION_STORAGE_KEY = "ai_chat_conversation_id";
+  let conversationId = localStorage.getItem(CONVERSATION_STORAGE_KEY) || null;
   let isOpen = false;
   let currentUserId = null;
   let currentBotStart = -1;
@@ -245,6 +246,9 @@
       const serverConversationId = res.headers.get("x-conversation-id");
       if (serverConversationId && serverConversationId !== conversationId) {
         conversationId = serverConversationId;
+        try {
+          localStorage.setItem(CONVERSATION_STORAGE_KEY, conversationId);
+        } catch {}
       }
 
       if (!res.body || !res.body.getReader) {
