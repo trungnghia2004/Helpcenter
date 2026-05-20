@@ -16,6 +16,38 @@
 
   const CONVERSATION_STORAGE_KEY = "ai_chat_conversation_id";
   const CHAT_LOG_STORAGE_KEY = "ai_chat_log_text";
+  const CHAT_LAST_ACTIVE_KEY = "ai_chat_last_active_at";
+  const CHAT_TTL_MS = 3 * 60 * 1000; // 3 minutes
+
+  function nowMs() {
+    return Date.now();
+  }
+
+  function readLastActiveMs() {
+    const raw = localStorage.getItem(CHAT_LAST_ACTIVE_KEY) || "";
+    const n = Number(raw);
+    return Number.isFinite(n) && n > 0 ? n : 0;
+  }
+
+  function touchChatActivity() {
+    try {
+      localStorage.setItem(CHAT_LAST_ACTIVE_KEY, String(nowMs()));
+    } catch {}
+  }
+
+  function clearChatStorage() {
+    try {
+      localStorage.removeItem(CONVERSATION_STORAGE_KEY);
+      localStorage.removeItem(CHAT_LOG_STORAGE_KEY);
+      localStorage.removeItem(CHAT_LAST_ACTIVE_KEY);
+    } catch {}
+  }
+
+  const lastActiveMs = readLastActiveMs();
+  if (lastActiveMs > 0 && nowMs() - lastActiveMs > CHAT_TTL_MS) {
+    clearChatStorage();
+  }
+
   let conversationId = localStorage.getItem(CONVERSATION_STORAGE_KEY) || null;
   let isOpen = false;
   let currentUserId = null;
@@ -62,6 +94,7 @@
     logEl.scrollTop = logEl.scrollHeight;
     try {
       localStorage.setItem(CHAT_LOG_STORAGE_KEY, logEl.textContent || "");
+      touchChatActivity();
     } catch {}
   }
 
@@ -163,6 +196,7 @@
       if (saved) {
         log.textContent = saved;
         log.scrollTop = log.scrollHeight;
+        touchChatActivity();
       }
     } catch {}
     const form = el("form", { id: "ai-chat-form" });
@@ -259,6 +293,7 @@
         conversationId = serverConversationId;
         try {
           localStorage.setItem(CONVERSATION_STORAGE_KEY, conversationId);
+          touchChatActivity();
         } catch {}
       }
 
