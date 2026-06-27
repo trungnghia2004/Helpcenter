@@ -1,19 +1,45 @@
+using Microsoft.Extensions.Options;
+using Microsoft.SemanticKernel;
+using Microsoft.SemanticKernel.Connectors.OpenAI;
+
 namespace ChatAgentApi;
 
 internal static class ServiceCollectionExtensions
 {
     internal static IServiceCollection AddChatAgentApplication(this IServiceCollection services, IConfiguration configuration, IHostEnvironment environment)
     {
-        var options = ChatAgentOptions.Load(configuration);
+        var bootstrapOptions = ChatAgentOptions.CreateBootstrap(configuration);
+        var bootstrapErrors = ChatAgentOptions.Validate(bootstrapOptions);
+        if (bootstrapErrors.Count > 0)
+            throw new InvalidOperationException(string.Join(Environment.NewLine, bootstrapErrors));
 
-        services.AddSingleton(options);
-        services.AddAppMiddleware(options);
+        services.AddOptions<ChatAgentOptions>()
+            .Bind(configuration.GetSection(ChatAgentOptions.SectionName))
+            .PostConfigure(ChatAgentOptions.ApplyEnvironmentOverrides)
+            .Validate(
+                options => ChatAgentOptions.Validate(options).Count == 0,
+                "ChatAgent options are invalid.")
+            .ValidateOnStart();
+
+        services.AddAppMiddleware(bootstrapOptions);
         services.AddHttpClient("openai");
         services.AddHttpClient("laravel");
-        services.AddSingleton<ChatCore.IAgentOrchestrator, ChatCore.SemanticKernelAgentOrchestrator>();
+        services.AddOpenAIChatCompletion(
+            modelId: bootstrapOptions.OpenAiModel,
+            apiKey: bootstrapOptions.OpenAiApiKey);
+#pragma warning disable SKEXP0010
+        services.AddOpenAIEmbeddingGenerator(
+            modelId: bootstrapOptions.OpenAiEmbedModel,
+            apiKey: bootstrapOptions.OpenAiApiKey);
+#pragma warning restore SKEXP0010
+        services.AddTransient<Kernel>(sp => new Kernel(sp));
+        services.AddScoped<IChatAuthenticationService, ChatAuthenticationService>();
+        services.AddScoped<ChatCore.IAgentOrchestrator, ChatCore.SemanticKernelAgentOrchestrator>();
         services.AddScoped<ChatCore.IChatRequestHandler, ChatCore.ChatRequestHandler>();
 
-        services.AddSingleton(_ => BuildRuntime(environment, options));
+        services.AddSingleton(sp => BuildRuntime(
+            environment,
+            sp.GetRequiredService<IOptions<ChatAgentOptions>>().Value));
 
         return services;
     }

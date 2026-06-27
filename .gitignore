@@ -2,11 +2,13 @@
 .vs/
 bin/
 obj/
+**/bin_temp/
 
 # User files
 *.user
 *.suo
 *.cache
+*.lscache
 
 # Build
 *.dll

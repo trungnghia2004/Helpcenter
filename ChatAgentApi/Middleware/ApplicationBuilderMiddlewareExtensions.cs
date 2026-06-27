@@ -1,3 +1,5 @@
+using Microsoft.AspNetCore.HttpOverrides;
+
 namespace ChatAgentApi;
 
 internal static class ApplicationBuilderMiddlewareExtensions
@@ -9,6 +11,7 @@ internal static class ApplicationBuilderMiddlewareExtensions
         if (!app.Environment.IsDevelopment())
             app.UseHsts();
 
+        app.UseForwardedHeaders();
         app.UseHttpsRedirection();
         app.UseDefaultFiles();
         app.UseStaticFiles();
@@ -16,6 +19,7 @@ internal static class ApplicationBuilderMiddlewareExtensions
         app.UseRouting();
         app.UseRequestDecompression();
         app.UseCors(MiddlewarePolicyNames.CorsPolicyName);
+        app.UseMiddleware<ChatAuthenticationMiddleware>();
         app.UseRateLimiter();
         app.UseRequestTimeouts();
 

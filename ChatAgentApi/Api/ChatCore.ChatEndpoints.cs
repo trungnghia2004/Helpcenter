@@ -56,7 +56,8 @@ internal static partial class ChatCore
         HttpContext ctx,
         ChatAgentRuntime runtime,
         IHttpClientFactory httpClientFactory,
-        IAgentOrchestrator agentOrchestrator)
+        IAgentOrchestrator agentOrchestrator,
+        IChatAuthenticationService authService)
     {
         var conversations = runtime.Conversations;
         var kb = runtime.KnowledgeBase;
@@ -81,8 +82,8 @@ internal static partial class ChatCore
         var openAiHttp = httpClientFactory.CreateClient("openai");
         var laravelHttp = httpClientFactory.CreateClient("laravel");
 
-        var auth = await TryAuthenticateUserAsync(ctx.Request, laravelHttp, laravelBase, ctx.RequestAborted);
-        if (!auth.ok || string.IsNullOrWhiteSpace(auth.userKey))
+        var requesterKey = await authService.GetAuthenticatedUserKeyAsync(ctx, ctx.RequestAborted);
+        if (string.IsNullOrWhiteSpace(requesterKey))
         {
             ctx.Response.StatusCode = StatusCodes.Status401Unauthorized;
             await ctx.Response.WriteAsJsonAsync(new
@@ -93,7 +94,6 @@ internal static partial class ChatCore
             return;
         }
 
-        var requesterKey = auth.userKey!;
         var overQuota = IsDailyQuotaExceeded(requesterKey, dailyTokenQuota, out var usedToday);
 
         var conversationId = string.IsNullOrWhiteSpace(req.ConversationId)
@@ -525,7 +525,6 @@ internal static partial class ChatCore
         var messageId = "m_" + Guid.NewGuid().ToString("N");
         var textId = "t_" + Guid.NewGuid().ToString("N");
         var sb = new StringBuilder();
-        OpenAiUsage? usage = null;
         var promptTokensEstimated = EstimateTokenCount(prompt);
         var chargeTokens = true;
         var usageNote = "";
@@ -541,13 +540,10 @@ internal static partial class ChatCore
                 "Tra ve size/mau/ton kho. Khong hoi lai user ve ten san pham.";
         }
         var agentContext = new AgentExecutionContext(
-            OpenAiHttp: openAiHttp,
             LaravelHttp: laravelHttp,
             LaravelBase: laravelBase,
             KnowledgeBase: kb,
             KnowledgeDir: knowledgeDir,
-            OpenAiApiKey: openAiApiKey,
-            OpenAiEmbedModel: openAiEmbedModel,
             LastKnownProductCode: lastKnownCode,
             ConversationId: conversationId,
             UserKey: requesterKey,
@@ -566,11 +562,8 @@ internal static partial class ChatCore
         try
         {
             var agentRequest = new AgentStreamRequest(
-                Model: openAiModel,
-                ApiKey: openAiApiKey,
                 Messages: prompt,
                 Context: agentContext,
-                OnUsage: u => usage = u,
                 CancellationToken: ctx.RequestAborted
             );
 
@@ -607,9 +600,9 @@ internal static partial class ChatCore
         MergeUserMemoryFromConversation(userMemoriesPath, requesterKey, conv);
         PersistConversations(conversationsPath, conversations);
 
-        var completionTokens = usage?.CompletionTokens ?? EstimateTokenCount(sb.ToString());
-        var promptTokens = usage?.PromptTokens ?? promptTokensEstimated;
-        var totalTokens = usage?.TotalTokens ?? (promptTokens + completionTokens);
+        var completionTokens = EstimateTokenCount(sb.ToString());
+        var promptTokens = promptTokensEstimated;
+        var totalTokens = promptTokens + completionTokens;
         if (!chargeTokens)
         {
             promptTokens = 0;
@@ -754,116 +747,6 @@ internal static partial class ChatCore
         RecentProductByRequester[requesterKey] = new RecentProductHint(productCode.Trim().ToUpperInvariant(), DateTime.UtcNow);
     }
 
-    static async Task<(bool ok, string? userKey)> TryAuthenticateUserAsync(
-        HttpRequest request,
-        HttpClient laravelHttp,
-        string laravelBase,
-        CancellationToken ct)
-    {
-        var forwardedUserId = request.Headers["x-user-id"].ToString().Trim();
-        if (!string.IsNullOrWhiteSpace(forwardedUserId))
-            return (true, $"user:{forwardedUserId}");
-
-        var token = ExtractBearerToken(request);
-        if (!string.IsNullOrWhiteSpace(token))
-        {
-            if (AuthTokenCache.TryGetValue(token, out var hit) && hit.ExpiresAtUtc > DateTime.UtcNow)
-                return (true, hit.UserKey);
-
-            var byToken = await ValidateBearerAsync(laravelHttp, laravelBase, token, ct);
-            if (byToken.ok && !string.IsNullOrWhiteSpace(byToken.userKey))
-            {
-                AuthTokenCache[token] = new AuthUserHint(byToken.userKey!, DateTime.UtcNow.AddMinutes(5));
-                return byToken;
-            }
-        }
-
-        var cookieHeader = request.Headers["Cookie"].ToString();
-        if (!string.IsNullOrWhiteSpace(cookieHeader))
-        {
-            var byCookie = await ValidateSessionCookieAsync(laravelHttp, laravelBase, cookieHeader, ct);
-            if (byCookie.ok)
-                return byCookie;
-        }
-
-        return (false, null);
-    }
-
-    static async Task<(bool ok, string? userKey)> ValidateBearerAsync(
-        HttpClient laravelHttp,
-        string laravelBase,
-        string token,
-        CancellationToken ct)
-    {
-        using var req = new HttpRequestMessage(HttpMethod.Get, $"{laravelBase}/api/user");
-        req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
-        req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
-
-        using var resp = await laravelHttp.SendAsync(req, ct);
-        if (!resp.IsSuccessStatusCode)
-            return (false, null);
-
-        var body = await resp.Content.ReadAsStringAsync(ct);
-        return ParseUserKeyFromJson(body);
-    }
-
-    static async Task<(bool ok, string? userKey)> ValidateSessionCookieAsync(
-        HttpClient laravelHttp,
-        string laravelBase,
-        string cookieHeader,
-        CancellationToken ct)
-    {
-        using var req = new HttpRequestMessage(HttpMethod.Get, $"{laravelBase}/chat-auth/me");
-        req.Headers.Add("Cookie", cookieHeader);
-        req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
-
-        using var resp = await laravelHttp.SendAsync(req, ct);
-        if (!resp.IsSuccessStatusCode)
-            return (false, null);
-
-        var body = await resp.Content.ReadAsStringAsync(ct);
-        return ParseUserKeyFromJson(body);
-    }
-
-    static (bool ok, string? userKey) ParseUserKeyFromJson(string body)
-    {
-        if (string.IsNullOrWhiteSpace(body))
-            return (false, null);
-
-        try
-        {
-            using var doc = JsonDocument.Parse(body);
-            var root = doc.RootElement;
-            string? id = null;
-            if (root.TryGetProperty("id", out var idEl))
-                id = idEl.ToString();
-            else if (root.TryGetProperty("userId", out var uidEl))
-                id = uidEl.ToString();
-
-            if (string.IsNullOrWhiteSpace(id))
-                return (false, null);
-
-            return (true, $"user:{id}");
-        }
-        catch
-        {
-            return (false, null);
-        }
-    }
-
-    static string? ExtractBearerToken(HttpRequest request)
-    {
-        if (!request.Headers.TryGetValue("Authorization", out var authValues))
-            return null;
-        var auth = authValues.ToString().Trim();
-        if (string.IsNullOrWhiteSpace(auth)) return null;
-        const string prefix = "Bearer ";
-        if (!auth.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
-            return null;
-        var token = auth[prefix.Length..].Trim();
-        return string.IsNullOrWhiteSpace(token) ? null : token;
-    }
-
     static string BuildPlannerHint(string userText)
     {
         var safeUserText = userText ?? string.Empty;
@@ -886,5 +769,3 @@ internal static partial class ChatCore
         return "Bat dau bang search_knowledge hoac search_products tuy theo y nghia cau hoi, tranh goi qua nhieu tool.";
     }
 }
-
-

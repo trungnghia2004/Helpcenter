@@ -86,13 +86,13 @@ internal static partial class ChatCore
 
     static (string systemText, List<ChatMessage> promptMessages) BuildPromptWithTokenBudget(
         Conversation conv,
-        string baseRules,                
-        string? summary,                 
-        string? memory,                  
-        List<string> sourcesBlocks,      
-        int maxPromptTokens = 7000,      
+        string baseRules,
+        string? summary,
+        string? memory,
+        List<string> sourcesBlocks,
+        int maxPromptTokens = 7000,
         int reserveForAnswerTokens = 800,
-        int maxHistoryMessages = 6      
+        int maxHistoryMessages = 6
     )
     {
         static int EstTokens(string s) => string.IsNullOrEmpty(s) ? 0 : (s.Length / 4) + 1;
@@ -245,14 +245,23 @@ internal static partial class ChatCore
 
         var colorMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
-            ["đen"] = "đen", ["den"] = "đen",
-            ["trắng"] = "trắng", ["trang"] = "trắng",
-            ["xanh"] = "xanh", ["xanh nước"] = "xanh nước", ["xanh nuoc"] = "xanh nước",
-            ["đỏ"] = "đỏ", ["do"] = "đỏ",
-            ["hồng"] = "hồng", ["hong"] = "hồng",
-            ["vàng"] = "vàng", ["vang"] = "vàng",
-            ["nâu"] = "nâu", ["nau"] = "nâu",
-            ["xám"] = "xám", ["xam"] = "xám"
+            ["đen"] = "đen",
+            ["den"] = "đen",
+            ["trắng"] = "trắng",
+            ["trang"] = "trắng",
+            ["xanh"] = "xanh",
+            ["xanh nước"] = "xanh nước",
+            ["xanh nuoc"] = "xanh nước",
+            ["đỏ"] = "đỏ",
+            ["do"] = "đỏ",
+            ["hồng"] = "hồng",
+            ["hong"] = "hồng",
+            ["vàng"] = "vàng",
+            ["vang"] = "vàng",
+            ["nâu"] = "nâu",
+            ["nau"] = "nâu",
+            ["xám"] = "xám",
+            ["xam"] = "xám"
         };
 
         foreach (var msg in window)

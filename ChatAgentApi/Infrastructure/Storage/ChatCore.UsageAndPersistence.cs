@@ -10,19 +10,6 @@ namespace ChatAgentApi;
 
 internal static partial class ChatCore
 {
-    internal sealed record OpenAiUsage(int PromptTokens, int CompletionTokens, int TotalTokens);
-
-    static string BuildRequesterKey(ChatRequest req, HttpContext ctx)
-    {
-        if (!string.IsNullOrWhiteSpace(req.UserId))
-            return $"user:{req.UserId.Trim()}";
-
-        var ip = ctx.Connection.RemoteIpAddress?.ToString();
-        if (!string.IsNullOrWhiteSpace(ip))
-            return $"ip:{ip}";
-
-        return "ip:unknown";
-    }
     static bool IsDailyQuotaExceeded(string requesterKey, int dailyQuota, out long usedToday)
     {
         var usageKey = $"{DateOnly.FromDateTime(DateTime.UtcNow):yyyy-MM-dd}|{requesterKey}";

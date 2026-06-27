@@ -14,22 +14,16 @@ internal static partial class ChatCore
     }
 
     internal sealed record AgentStreamRequest(
-        string Model,
-        string ApiKey,
         List<ChatMessage> Messages,
         AgentExecutionContext Context,
-        Action<OpenAiUsage>? OnUsage,
         CancellationToken CancellationToken
     );
 
     internal sealed record AgentExecutionContext(
-        HttpClient OpenAiHttp,
         HttpClient LaravelHttp,
         string LaravelBase,
         KnowledgeBase KnowledgeBase,
         string KnowledgeDir,
-        string OpenAiApiKey,
-        string OpenAiEmbedModel,
         string? LastKnownProductCode,
         string ConversationId,
         string UserKey,
@@ -55,19 +49,16 @@ internal static partial class ChatCore
 
     internal sealed class SemanticKernelAgentOrchestrator : IAgentOrchestrator
     {
+        readonly IServiceProvider _serviceProvider;
+
+        public SemanticKernelAgentOrchestrator(IServiceProvider serviceProvider)
+        {
+            _serviceProvider = serviceProvider;
+        }
+
         public async IAsyncEnumerable<string> StreamAsync(AgentStreamRequest request)
         {
-            if (string.IsNullOrWhiteSpace(request.ApiKey))
-                throw new InvalidOperationException("Missing OPENAI_API_KEY environment variable.");
-
-            var kernelBuilder = Kernel.CreateBuilder();
-            kernelBuilder.AddOpenAIChatCompletion(request.Model, request.ApiKey);
-#pragma warning disable SKEXP0010
-            kernelBuilder.AddOpenAIEmbeddingGenerator(
-                modelId: request.Context.OpenAiEmbedModel,
-                apiKey: request.ApiKey);
-#pragma warning restore SKEXP0010
-            var kernel = kernelBuilder.Build();
+            var kernel = _serviceProvider.GetRequiredService<Kernel>();
 
             var plugin = new StoreKernelPlugin(request.Context, kernel);
             kernel.Plugins.AddFromObject(plugin, "store");

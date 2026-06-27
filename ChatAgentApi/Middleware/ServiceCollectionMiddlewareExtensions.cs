@@ -1,5 +1,7 @@
-﻿using Microsoft.AspNetCore.Http.Timeouts;
+using Microsoft.AspNetCore.Http.Timeouts;
+using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.RateLimiting;
+using System.Net;
 using System.Threading.RateLimiting;
 
 namespace ChatAgentApi;
@@ -8,6 +10,15 @@ internal static class ServiceCollectionMiddlewareExtensions
 {
     internal static IServiceCollection AddAppMiddleware(this IServiceCollection services, ChatAgentOptions options)
     {
+        services.Configure<ForwardedHeadersOptions>(forwardedHeaders =>
+        {
+            forwardedHeaders.ForwardedHeaders =
+                ForwardedHeaders.XForwardedFor |
+                ForwardedHeaders.XForwardedProto |
+                ForwardedHeaders.XForwardedHost;
+            ConfigureKnownForwarders(forwardedHeaders, options);
+        });
+
         services.AddCors(cors =>
         {
             cors.AddPolicy(MiddlewarePolicyNames.CorsPolicyName, policy => policy
@@ -79,14 +90,43 @@ internal static class ServiceCollectionMiddlewareExtensions
 
     static string ResolveRateLimitPartitionKey(HttpContext ctx)
     {
-        var userId = ctx.Request.Headers["x-user-id"].ToString();
-        if (!string.IsNullOrWhiteSpace(userId))
-            return $"user:{userId.Trim()}";
+        if (ctx.Items.TryGetValue(ChatAuthenticationService.UserKeyItemName, out var userKeyObj) &&
+            userKeyObj is string userKey &&
+            !string.IsNullOrWhiteSpace(userKey))
+            return userKey;
 
         var ip = ctx.Connection.RemoteIpAddress?.ToString();
         if (!string.IsNullOrWhiteSpace(ip))
             return $"ip:{ip}";
 
         return "ip:unknown";
+    }
+
+    static void ConfigureKnownForwarders(ForwardedHeadersOptions forwardedHeaders, ChatAgentOptions options)
+    {
+        var knownProxies = options.ForwardedHeadersKnownProxies
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .ToList();
+        var knownNetworks = options.ForwardedHeadersKnownNetworks
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .ToList();
+
+        if (knownProxies.Count == 0 && knownNetworks.Count == 0)
+            return;
+
+        forwardedHeaders.KnownIPNetworks.Clear();
+        forwardedHeaders.KnownProxies.Clear();
+
+        foreach (var proxy in knownProxies)
+        {
+            if (IPAddress.TryParse(proxy, out var parsedProxy))
+                forwardedHeaders.KnownProxies.Add(parsedProxy);
+        }
+
+        foreach (var network in knownNetworks)
+        {
+            if (System.Net.IPNetwork.TryParse(network, out var parsedNetwork))
+                forwardedHeaders.KnownIPNetworks.Add(parsedNetwork);
+        }
     }
 }

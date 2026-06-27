@@ -1,10 +1,15 @@
-﻿(function () {
+(function () {
   const SAME_ORIGIN_API = window.location.origin.replace(/\/+$/, "") + "/api/chat";
+  const CURRENT_HOST_API = window.location.protocol + "//" + window.location.hostname + ":5000/api/chat";
+  const ALT_HOST_APIS = [
+    "http://localhost:5000/api/chat",
+    "http://127.0.0.1:5000/api/chat"
+  ].filter((url) => url !== CURRENT_HOST_API);
 
   const DEFAULT_CHAT_API_CANDIDATES = [
     SAME_ORIGIN_API,
-    "http://localhost:5000/api/chat",
-    "http://127.0.0.1:5000/api/chat"
+    CURRENT_HOST_API,
+    ...ALT_HOST_APIS
   ];
 
   const configuredApi =
@@ -17,7 +22,7 @@
   const CONVERSATION_STORAGE_KEY = "ai_chat_conversation_id";
   const CHAT_LOG_STORAGE_KEY = "ai_chat_log_text";
   const CHAT_LAST_ACTIVE_KEY = "ai_chat_last_active_at";
-  const CHAT_TTL_MS = 3 * 60 * 1000; // 3 minutes
+  const CHAT_TTL_MS = 30 * 1000;
 
   function nowMs() {
     return Date.now();
@@ -50,7 +55,6 @@
 
   let conversationId = localStorage.getItem(CONVERSATION_STORAGE_KEY) || null;
   let isOpen = false;
-  let currentUserId = null;
   let currentBotStart = -1;
 
   function getAuthToken() {
@@ -138,7 +142,7 @@
     return result;
   }
 
-  async function fetchChatWithFallback(payload, token) {
+  async function fetchChatWithFallback(payload, token, hasSessionUser) {
     const urls = uniq(CHAT_API_CANDIDATES);
     let lastError = null;
 
@@ -147,8 +151,7 @@
       const timeout = setTimeout(() => controller.abort(), 20000);
       try {
         const headers = { "Content-Type": "application/json" };
-        if (token && token.trim()) headers["Authorization"] = `Bearer ${token}`;
-        if (payload && payload.userId) headers["x-user-id"] = String(payload.userId);
+        if (token && token.trim()) headers.Authorization = `Bearer ${token}`;
 
         const res = await fetch(url, {
           method: "POST",
@@ -165,9 +168,20 @@
         const isHtml = contentType.includes("text/html");
         const isLikelyWrongRoute = res.status === 404 || res.status === 405 || res.status === 419;
         const isSameOrigin = url.indexOf(window.location.origin) === 0;
+        const isHostAliasMismatchAuth =
+          res.status === 401 &&
+          !token &&
+          hasSessionUser &&
+          !isSameOrigin &&
+          urls.length > 1;
 
         if ((isLikelyWrongRoute || isHtml) && (isSameOrigin || urls.length > 1)) {
           lastError = new Error(`HTTP ${res.status} from ${url} (likely wrong server/route)`);
+          continue;
+        }
+
+        if (isHostAliasMismatchAuth) {
+          lastError = new Error(`HTTP 401 from ${url} while probing auth-compatible API host`);
           continue;
         }
 
@@ -232,8 +246,6 @@
       const authToken = getAuthToken();
       const sessionUser = await getSessionUser();
       if (!authToken && !sessionUser) return;
-      const userId = sessionUser && sessionUser.id != null ? String(sessionUser.id) : (currentUserId || "");
-      if (userId) currentUserId = userId;
 
       const q = input.value.trim();
       if (!q) return;
@@ -247,9 +259,8 @@
       try {
         const r = await fetchChatWithFallback({
           conversationId,
-          messages: [{ role: "user", content: q }],
-          userId: currentUserId || undefined
-        }, authToken);
+          messages: [{ role: "user", content: q }]
+        }, authToken, !!sessionUser);
         res = r.res;
         usedUrl = r.url;
       } catch (err) {
@@ -354,7 +365,6 @@
     const token = getAuthToken();
     const sessionUser = await getSessionUser();
     if (!token && !sessionUser) return;
-    if (sessionUser && sessionUser.id != null) currentUserId = String(sessionUser.id);
 
     if (document.readyState === "loading") {
       document.addEventListener("DOMContentLoaded", mount);
