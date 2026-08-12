@@ -24,17 +24,31 @@ internal static class ServiceCollectionExtensions
         services.AddAppMiddleware(bootstrapOptions);
         services.AddHttpClient("openai");
         services.AddHttpClient("laravel");
-        services.AddOpenAIChatCompletion(
-            modelId: bootstrapOptions.OpenAiModel,
-            apiKey: bootstrapOptions.OpenAiApiKey);
 #pragma warning disable SKEXP0010
         services.AddOpenAIEmbeddingGenerator(
             modelId: bootstrapOptions.OpenAiEmbedModel,
             apiKey: bootstrapOptions.OpenAiApiKey);
 #pragma warning restore SKEXP0010
-        services.AddTransient<Kernel>(sp => new Kernel(sp));
+        services.AddScoped<ChatCore.AgentToolExecutionContextAccessor>();
+        services.AddScoped<ChatCore.StoreKernelPlugin>();
+        services.AddScoped<ChatCore.ProductCatalogService>();
+        services.AddScoped<ChatCore.IProductCatalogService>(sp => sp.GetRequiredService<ChatCore.ProductCatalogService>());
+        services.AddScoped<ChatCore.IKnowledgeSearchService, ChatCore.KnowledgeSearchService>();
+        services.AddTransient<KernelPluginCollection>(sp =>
+        {
+            var plugins = new KernelPluginCollection();
+            plugins.Add(KernelPluginFactory.CreateFromObject(
+                target: sp.GetRequiredService<ChatCore.StoreKernelPlugin>(),
+                pluginName: "store"));
+            return plugins;
+        });
+        services.AddTransient<Kernel>(sp => new Kernel(
+            sp,
+            sp.GetRequiredService<KernelPluginCollection>()));
+        services.AddScoped<ChatCore.ISemanticKernelToolBridge, ChatCore.SemanticKernelToolBridge>();
         services.AddScoped<IChatAuthenticationService, ChatAuthenticationService>();
-        services.AddScoped<ChatCore.IAgentOrchestrator, ChatCore.SemanticKernelAgentOrchestrator>();
+        services.AddScoped<ChatCore.IAgentModelBackend, ChatCore.ResponsesBackend>();
+        services.AddScoped<ChatCore.IAgentOrchestrator, ChatCore.AgentOrchestrator>();
         services.AddScoped<ChatCore.IChatRequestHandler, ChatCore.ChatRequestHandler>();
 
         services.AddSingleton(sp => BuildRuntime(

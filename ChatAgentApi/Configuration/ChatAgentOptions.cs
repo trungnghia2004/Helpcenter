@@ -8,6 +8,7 @@ internal sealed class ChatAgentOptions
     public string OpenAiApiKey { get; set; } = "";
     public string OpenAiModel { get; set; } = "gpt-4.1-mini";
     public string OpenAiEmbedModel { get; set; } = "text-embedding-3-small";
+    public bool ForceGptForAll { get; set; } = false;
     public int AgentMaxToolCalls { get; set; } = 8;
     public int AgentMaxToolOutputChars { get; set; } = 1200;
     public int RateLimitPerMinute { get; set; } = 60;
@@ -29,6 +30,7 @@ internal sealed class ChatAgentOptions
         options.OpenAiApiKey = ReadStringEnv("OPENAI_API_KEY", options.OpenAiApiKey);
         options.OpenAiModel = ReadStringEnv("OPENAI_CHAT_MODEL", options.OpenAiModel);
         options.OpenAiEmbedModel = ReadStringEnv("OPENAI_EMBED_MODEL", options.OpenAiEmbedModel);
+        options.ForceGptForAll = ReadBoolEnv("CHAT_FORCE_GPT_FOR_ALL", options.ForceGptForAll);
 
         options.AgentMaxToolCalls = ReadIntEnv("AGENT_MAX_TOOL_CALLS", options.AgentMaxToolCalls);
         options.AgentMaxToolOutputChars = ReadIntEnv("AGENT_MAX_TOOL_OUTPUT_CHARS", options.AgentMaxToolOutputChars);
@@ -82,6 +84,12 @@ internal sealed class ChatAgentOptions
     {
         var raw = Environment.GetEnvironmentVariable(key);
         return int.TryParse(raw, out var value) ? value : fallback;
+    }
+
+    static bool ReadBoolEnv(string key, bool fallback)
+    {
+        var raw = Environment.GetEnvironmentVariable(key);
+        return bool.TryParse(raw, out var value) ? value : fallback;
     }
 
     static List<string> ReadStringListEnv(string key, List<string> fallback)

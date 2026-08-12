@@ -155,6 +155,7 @@ internal static partial class ChatCore
 
         string[] keyPhrases =
         {
+            "đồ thể thao", "do the thao", "thể thao", "the thao",
             "quần short", "quan short", "short",
             "quần jean", "quan jean", "jean",
             "áo gile", "ao gile", "gile",
@@ -187,6 +188,7 @@ internal static partial class ChatCore
 
         string[] phrases =
         {
+            "do the thao", "the thao",
             "ao gile", "gile",
             "ao thun", "thun",
             "hoodie",
@@ -208,11 +210,13 @@ internal static partial class ChatCore
         {
             "co", "nhung", "loai", "nao", "san", "pham", "cua", "cho", "toi", "muon",
             "biet", "con", "khong", "tim", "kiem", "mot", "may", "gia", "la", "bao",
-            "nhieu", "gi", "can", "duoc", "mau", "size", "kich", "co"
+            "nhieu", "gi", "can", "duoc", "mau", "size", "kich", "co",
+            "do", "the", "thao", "sport", "sportswear"
         };
         var categoryWords = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
-            "ao", "quan", "short", "jean", "hoodie", "thun", "gile", "khoac"
+            "ao", "quan", "short", "jean", "hoodie", "thun", "gile", "khoac",
+            "the", "thao", "sport", "sportswear"
         };
 
         var tokens = Regex.Matches(plainQ, @"[\p{L}\p{Nd}]+")

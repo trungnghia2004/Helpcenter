@@ -40,6 +40,12 @@ public class Program
             return;
         }
 
+        if (args.Contains("--smoke-sk", StringComparer.OrdinalIgnoreCase))
+        {
+            await ChatCore.RunSemanticKernelSmokeAsync(app.Services, CancellationToken.None);
+            return;
+        }
+
         app.MapChatAgentApi();
 
         await app.RunAsync();

@@ -92,6 +92,8 @@ internal static partial class ChatCore
         var plain = RemoveDiacritics(q.ToLowerInvariant());
         if (Regex.IsMatch(plain, @"\b(ao|quan|short|hoodie|jean|thun|gile)\b"))
             return true;
+        if (Regex.IsMatch(plain, @"\b(do the thao|the thao|sportswear)\b"))
+            return true;
         if (Regex.IsMatch(plain, @"\b(san pham|sp)\b"))
             return true;
         if (Regex.IsMatch(plain, @"\b(bao nhieu|may tien|gia)\b"))
@@ -120,6 +122,11 @@ internal static partial class ChatCore
             "loai nao", "nhung loai", "co nhung", "goi y", "danh sach"
         };
         if (kws.Any(plain.Contains)) return true;
+
+        if (Regex.IsMatch(plain, @"\b(co|shop co)\b") &&
+            Regex.IsMatch(plain, @"\b(khong)\b") &&
+            IsProductIntent(q))
+            return true;
 
         var hasCategory = Regex.IsMatch(plain, @"\b(ao|quan|short|jean|thun|hoodie|gile)\b");
         var hasBrowseWord = Regex.IsMatch(plain, @"\b(nao|nhung|cac|goi y|danh sach|san pham|sp)\b");

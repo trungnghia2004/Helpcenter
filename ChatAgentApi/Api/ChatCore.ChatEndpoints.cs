@@ -74,7 +74,7 @@ internal static partial class ChatCore
         var openAiEmbedModel = runtime.Options.OpenAiEmbedModel;
         var agentPolicy = runtime.AgentPolicy;
         var dailyTokenQuota = runtime.Options.DailyTokenQuota;
-        var forceGptForAll = true;
+        var forceGptForAll = runtime.Options.ForceGptForAll;
 
         var req = await ParseIncomingChatRequestAsync(ctx.Request, ctx.RequestAborted);
         var requestStarted = DateTime.UtcNow;
@@ -258,6 +258,7 @@ internal static partial class ChatCore
             (!string.IsNullOrWhiteSpace(lastUser) && IsProductIntent(lastUser)) ||
             variantFollowupConfirmation;
         string? fastProductAnswer = null;
+        var browseIntent = false;
 
         if (isProductQuery)
         {
@@ -266,7 +267,7 @@ internal static partial class ChatCore
                 var needVariants = IsVariantIntent(lastUser) || variantFollowupConfirmation;
                 var categoryOverviewIntent = IsCategoryOverviewIntent(lastUser);
                 var categoryKeyword = ExtractCategoryKeyword(lastUser);
-                var browseIntent =
+                browseIntent =
                     IsBrowseIntent(lastUser) ||
                     IsCategoryOnlyIntent(lastUser) ||
                     categoryOverviewIntent ||
@@ -330,7 +331,11 @@ internal static partial class ChatCore
                         }
                     }
 
-                    if (products.Count > 0)
+                    var needsSingleProductDetail =
+                        products.Count > 0 &&
+                        (!browseIntent || !string.IsNullOrWhiteSpace(code) || products.Count == 1 || needVariants);
+
+                    if (needsSingleProductDetail)
                     {
                         // Search result may not include full fields (e.g., productDesc),
                         // so hydrate details by code when possible.
@@ -403,6 +408,12 @@ internal static partial class ChatCore
         if (!forceGptForAll && isProductQuery && string.IsNullOrWhiteSpace(fastProductAnswer))
         {
             fastProductAnswer = "Mình chưa xác định được sản phẩm cụ thể. Bạn gửi thêm mã sản phẩm (VD: AT0009) hoặc tên chi tiết hơn nhé.";
+        }
+
+        if (!forceGptForAll && isProductQuery && browseIntent &&
+            fastProductAnswer == "MÃ¬nh chÆ°a xÃ¡c Ä‘á»‹nh Ä‘Æ°á»£c sáº£n pháº©m cá»¥ thá»ƒ. Báº¡n gá»i thÃªm mÃ£ sáº£n pháº©m (VD: AT0009) hoáº·c tÃªn chi tiáº¿t hÆ¡n nhÃ©.")
+        {
+            fastProductAnswer = "MÃ¬nh chÆ°a tÃ¬m tháº¥y sáº£n pháº©m phÃ¹ há»£p trong há»‡ thá»‘ng cho nhu cáº§u nÃ y. Báº¡n cÃ³ thá»ƒ thá»­ tá»« khÃ³a gáº§n hÆ¡n nhÆ° Ã¡o thun, hoodie, quáº§n short...";
         }
 
         if (!forceGptForAll && isProductQuery && !string.IsNullOrWhiteSpace(fastProductAnswer))
@@ -539,22 +550,16 @@ internal static partial class ChatCore
                 $"Bat buoc goi get_product_variants_by_code cho ma {effectiveRecentProductCode}. " +
                 "Tra ve size/mau/ton kho. Khong hoi lai user ve ten san pham.";
         }
-        var agentContext = new AgentExecutionContext(
-            LaravelHttp: laravelHttp,
-            LaravelBase: laravelBase,
-            KnowledgeBase: kb,
-            KnowledgeDir: knowledgeDir,
-            LastKnownProductCode: lastKnownCode,
-            ConversationId: conversationId,
-            UserKey: requesterKey,
-            TraceId: traceId,
-            Policy: agentPolicy,
-            RuntimeState: runtimeState,
-            ToolLogger: toolLogger,
-            StepLogger: stepLogger,
-            PlannerHint: plannerHint,
-            CancellationToken: ctx.RequestAborted
-        );
+        var agentContext = BuildAgentExecutionContext(
+            lastKnownProductCode: lastKnownCode,
+            conversationId: conversationId,
+            userKey: requesterKey,
+            traceId: traceId,
+            policy: agentPolicy,
+            runtimeState: runtimeState,
+            toolLogger: toolLogger,
+            stepLogger: stepLogger,
+            plannerHint: plannerHint);
 
         await SendStart(ctx, messageId);
         await SendTextStart(ctx, textId);
@@ -562,6 +567,8 @@ internal static partial class ChatCore
         try
         {
             var agentRequest = new AgentStreamRequest(
+                Model: openAiModel,
+                ApiKey: openAiApiKey,
                 Messages: prompt,
                 Context: agentContext,
                 CancellationToken: ctx.RequestAborted
@@ -763,7 +770,7 @@ internal static partial class ChatCore
         if (Regex.IsMatch(plain, @"\b(doi mat khau|quen mat khau|tai khoan|giao hang|thanh toan|doi tra|bao mat)\b"))
             return "UU tien search_knowledge. Chi goi tool san pham neu user hoi ro ve san pham.";
 
-        if (Regex.IsMatch(plain, @"\b(ao|quan|short|jean|thun|hoodie|gile|san pham|sp)\b"))
+        if (Regex.IsMatch(plain, @"\b(ao|quan|short|jean|thun|hoodie|gile|san pham|sp|the thao|do the thao)\b"))
             return "UU tien search_products hoac get_products_by_category. Neu user co dieu kien mau/size thi loc ket qua theo dieu kien.";
 
         return "Bat dau bang search_knowledge hoac search_products tuy theo y nghia cau hoi, tranh goi qua nhieu tool.";
