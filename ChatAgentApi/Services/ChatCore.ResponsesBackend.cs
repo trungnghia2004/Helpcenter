@@ -140,12 +140,15 @@ internal static partial class ChatCore
 
         HttpRequestMessage BuildHttpRequest(AgentStreamRequest request, JsonArray input, int stepNo)
         {
+            var tools = request.Context.AllowToolCalls
+                ? _toolBridge.BuildTools()
+                : new JsonArray();
             var body = new JsonObject
             {
                 ["model"] = request.Model,
                 ["input"] = input,
-                ["tools"] = _toolBridge.BuildTools(),
-                ["tool_choice"] = "auto",
+                ["tools"] = tools,
+                ["tool_choice"] = request.Context.AllowToolCalls ? "auto" : "none",
                 ["parallel_tool_calls"] = false,
                 ["store"] = false,
                 ["stream"] = true
@@ -155,7 +158,7 @@ internal static partial class ChatCore
                 request.Context,
                 stepNo: stepNo,
                 phase: "model_request",
-                detail: $"messages={request.Messages.Count};tools=5");
+                detail: $"messages={request.Messages.Count};tools={(request.Context.AllowToolCalls ? 5 : 0)}");
 
             var httpRequest = new HttpRequestMessage(HttpMethod.Post, "https://api.openai.com/v1/responses");
             httpRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", request.ApiKey);

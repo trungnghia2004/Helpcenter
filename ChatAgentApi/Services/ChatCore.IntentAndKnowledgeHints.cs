@@ -10,6 +10,38 @@ namespace ChatAgentApi;
 
 internal static partial class ChatCore
 {
+    static bool IsKnowledgeIntent(string q)
+    {
+        if (string.IsNullOrWhiteSpace(q)) return false;
+        var plain = RemoveDiacritics(q.ToLowerInvariant());
+
+        return plain.Contains("bang size", StringComparison.Ordinal) ||
+               plain.Contains("size guide", StringComparison.Ordinal) ||
+               plain.Contains("kich co", StringComparison.Ordinal) ||
+               plain.Contains("giao hang", StringComparison.Ordinal) ||
+               plain.Contains("ship", StringComparison.Ordinal) ||
+               plain.Contains("van chuyen", StringComparison.Ordinal) ||
+               plain.Contains("thanh toan", StringComparison.Ordinal) ||
+               plain.Contains("doi tra", StringComparison.Ordinal) ||
+               plain.Contains("tra hang", StringComparison.Ordinal) ||
+               plain.Contains("hoan tien", StringComparison.Ordinal) ||
+               plain.Contains("theo doi don", StringComparison.Ordinal) ||
+               plain.Contains("kiem tra don", StringComparison.Ordinal) ||
+               plain.Contains("don hang", StringComparison.Ordinal) ||
+               plain.Contains("cach mua hang", StringComparison.Ordinal) ||
+               plain.Contains("cach dat hang", StringComparison.Ordinal) ||
+               plain.Contains("huong dan mua", StringComparison.Ordinal) ||
+               plain.Contains("mua hang", StringComparison.Ordinal) ||
+               plain.Contains("dat hang", StringComparison.Ordinal) ||
+               plain.Contains("bao mat", StringComparison.Ordinal) ||
+               plain.Contains("chinh sach bao mat", StringComparison.Ordinal) ||
+               plain.Contains("doi mat khau", StringComparison.Ordinal) ||
+               plain.Contains("quen mat khau", StringComparison.Ordinal) ||
+               plain.Contains("mat khau", StringComparison.Ordinal) ||
+               plain.Contains("tai khoan", StringComparison.Ordinal) ||
+               plain.Contains("dang nhap", StringComparison.Ordinal);
+    }
+
     static string? TryGetLocalKnowledgeAnswer(string query, string knowledgeDir)
     {
         if (string.IsNullOrWhiteSpace(query)) return null;

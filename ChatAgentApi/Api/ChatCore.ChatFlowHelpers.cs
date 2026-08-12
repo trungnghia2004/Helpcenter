@@ -11,7 +11,8 @@ internal static partial class ChatCore
         AgentRuntimeState runtimeState,
         Action<AgentToolCallLog>? toolLogger,
         Action<AgentStepLog>? stepLogger,
-        string? plannerHint)
+        string? plannerHint,
+        bool allowToolCalls)
     {
         return new AgentExecutionContext(
             LastKnownProductCode: lastKnownProductCode,
@@ -22,6 +23,7 @@ internal static partial class ChatCore
             RuntimeState: runtimeState,
             ToolLogger: toolLogger,
             StepLogger: stepLogger,
-            PlannerHint: plannerHint);
+            PlannerHint: plannerHint,
+            AllowToolCalls: allowToolCalls);
     }
 }

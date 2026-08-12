@@ -108,15 +108,6 @@ internal static partial class ChatCore
             .Select(x => x.item)
             .ToList();
 
-        if (ranked.Count == 0 && descriptorKeywords.Count > 0)
-        {
-            ranked = scored
-                .OrderByDescending(x => x.score)
-                .Take(8)
-                .Select(x => x.item)
-                .ToList();
-        }
-
         return ranked;
     }
 

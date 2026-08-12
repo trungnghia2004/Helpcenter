@@ -16,3 +16,4 @@ obj/
 
 # Runtime generated data
 ChatAgentApi/runtime/
+ChatAgentApi/_tmp_build*/

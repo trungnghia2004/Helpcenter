@@ -1,4 +1,4 @@
-using System.Collections.Concurrent;
+﻿using System.Collections.Concurrent;
 using System.Globalization;
 using System.Net.Http.Headers;
 using System.Text;
@@ -158,6 +158,34 @@ internal static partial class ChatCore
         }
 
         var lastUser = conv.Messages.LastOrDefault(m => m.Role == "user")?.Content?.Trim() ?? "";
+        var ruleProductIntent = !string.IsNullOrWhiteSpace(lastUser) && IsProductIntent(lastUser);
+        var ruleKnowledgeIntent = IsKnowledgeIntent(lastUser);
+        IntentRoutingDecision? routedIntent = null;
+        if (!forceGptForAll &&
+            !ruleProductIntent &&
+            !ruleKnowledgeIntent &&
+            !string.IsNullOrWhiteSpace(lastUser))
+        {
+            try
+            {
+                routedIntent = await TryClassifyIntentAsync(
+                    openAiHttp,
+                    openAiApiKey,
+                    openAiModel,
+                    lastUser,
+                    ctx.RequestAborted);
+            }
+            catch
+            {
+            }
+        }
+
+        var classifierProductIntent =
+            string.Equals(routedIntent?.Intent, "product_search", StringComparison.Ordinal);
+        var effectiveProductQuery =
+            classifierProductIntent && !string.IsNullOrWhiteSpace(routedIntent?.SearchQuery)
+                ? routedIntent!.SearchQuery!
+                : lastUser;
         var recentConversationProductCode = ExtractRecentProductCode(conv);
         var shortAffirmative = IsShortAffirmative(lastUser);
         var recentRequesterProductCode = TryGetRequesterRecentProductCode(
@@ -169,7 +197,9 @@ internal static partial class ChatCore
         var variantFollowupConfirmation =
             IsVariantFollowupConfirmation(lastUser, conv) ||
             (shortAffirmative && !string.IsNullOrWhiteSpace(effectiveRecentProductCode));
-        var localKnowledgeFast = TryGetLocalKnowledgeAnswer(lastUser, knowledgeDir);
+        var localKnowledgeFast = classifierProductIntent
+            ? null
+            : TryGetLocalKnowledgeAnswer(lastUser, knowledgeDir);
         var hasExplicitProductCode = ExtractProductCode(lastUser) is not null;
 
         if (!forceGptForAll && shortAffirmative && string.IsNullOrWhiteSpace(effectiveRecentProductCode))
@@ -255,10 +285,12 @@ internal static partial class ChatCore
 
         var sourcesBlocks = new List<string>();
         var isProductQuery =
-            (!string.IsNullOrWhiteSpace(lastUser) && IsProductIntent(lastUser)) ||
+            ruleProductIntent ||
+            classifierProductIntent ||
             variantFollowupConfirmation;
         string? fastProductAnswer = null;
         var browseIntent = false;
+        var productLookupFailed = false;
 
         if (isProductQuery)
         {
@@ -266,10 +298,11 @@ internal static partial class ChatCore
             {
                 var needVariants = IsVariantIntent(lastUser) || variantFollowupConfirmation;
                 var categoryOverviewIntent = IsCategoryOverviewIntent(lastUser);
-                var categoryKeyword = ExtractCategoryKeyword(lastUser);
+                var categoryKeyword = ExtractCategoryKeyword(effectiveProductQuery);
                 browseIntent =
+                    classifierProductIntent ||
                     IsBrowseIntent(lastUser) ||
-                    IsCategoryOnlyIntent(lastUser) ||
+                    IsCategoryOnlyIntent(effectiveProductQuery) ||
                     categoryOverviewIntent ||
                     !string.IsNullOrWhiteSpace(categoryKeyword);
                 var code = ExtractProductCode(lastUser)
@@ -296,7 +329,7 @@ internal static partial class ChatCore
                 }
                 else if (string.IsNullOrWhiteSpace(fastProductAnswer))
                 {
-                    var isPureCategoryQuery = IsCategoryOnlyIntent(lastUser);
+                    var isPureCategoryQuery = IsCategoryOnlyIntent(effectiveProductQuery);
                     if (!string.IsNullOrWhiteSpace(categoryKeyword) && isPureCategoryQuery)
                     {
                         // Query thuần danh mục (vd: "áo thun", "quần short") thì lấy list theo category.
@@ -306,7 +339,7 @@ internal static partial class ChatCore
                     {
                         // Query có mô tả cụ thể (vd: "áo thun kaki", "áo thun wash")
                         // phải dùng search + ranking để ưu tiên đúng sản phẩm.
-                        products = await SearchProductsAsync(laravelHttp, laravelBase, lastUser, ctx.RequestAborted);
+                        products = await SearchProductsAsync(laravelHttp, laravelBase, effectiveProductQuery, ctx.RequestAborted);
                     }
 
                     if (products is null || products.Count == 0)
@@ -398,6 +431,7 @@ internal static partial class ChatCore
             }
             catch
             {
+                productLookupFailed = true;
                 if (string.IsNullOrWhiteSpace(fastProductAnswer))
                 {
                     fastProductAnswer = "Tạm thời không lấy được dữ liệu sản phẩm. Bạn vui lòng thử lại sau ít phút.";
@@ -405,54 +439,18 @@ internal static partial class ChatCore
             }
         }
 
-        if (!forceGptForAll && isProductQuery && string.IsNullOrWhiteSpace(fastProductAnswer))
+        if (isProductQuery && string.IsNullOrWhiteSpace(fastProductAnswer))
         {
-            fastProductAnswer = "Mình chưa xác định được sản phẩm cụ thể. Bạn gửi thêm mã sản phẩm (VD: AT0009) hoặc tên chi tiết hơn nhé.";
+            fastProductAnswer = browseIntent && !productLookupFailed
+                ? "Mình chưa tìm thấy sản phẩm phù hợp trong hệ thống cho nhu cầu này. Bạn có thể thử từ khóa gần hơn như áo thun, hoodie, quần short..."
+                : "Mình chưa xác định được sản phẩm cụ thể. Bạn gửi thêm mã sản phẩm (VD: AT0009) hoặc tên chi tiết hơn nhé.";
         }
 
-        if (!forceGptForAll && isProductQuery && browseIntent &&
-            fastProductAnswer == "MÃ¬nh chÆ°a xÃ¡c Ä‘á»‹nh Ä‘Æ°á»£c sáº£n pháº©m cá»¥ thá»ƒ. Báº¡n gá»i thÃªm mÃ£ sáº£n pháº©m (VD: AT0009) hoáº·c tÃªn chi tiáº¿t hÆ¡n nhÃ©.")
+        if (isProductQuery && !string.IsNullOrWhiteSpace(fastProductAnswer))
         {
-            fastProductAnswer = "MÃ¬nh chÆ°a tÃ¬m tháº¥y sáº£n pháº©m phÃ¹ há»£p trong há»‡ thá»‘ng cho nhu cáº§u nÃ y. Báº¡n cÃ³ thá»ƒ thá»­ tá»« khÃ³a gáº§n hÆ¡n nhÆ° Ã¡o thun, hoodie, quáº§n short...";
-        }
-
-        if (!forceGptForAll && isProductQuery && !string.IsNullOrWhiteSpace(fastProductAnswer))
-        {
-            var messageIdFast = "m_" + Guid.NewGuid().ToString("N");
-            var textIdFast = "t_" + Guid.NewGuid().ToString("N");
-            var answer = fastProductAnswer!.Trim();
-
-            await SendStart(ctx, messageIdFast);
-            await SendTextStart(ctx, textIdFast);
-            await SendTextDeltaChunked(ctx, textIdFast, answer, chunkChars: 40, minDelayMs: 14);
-            await SendTextEnd(ctx, textIdFast);
-            await SendDone(ctx);
-
-            conv.Messages.Add(new ChatMessage("assistant", answer));
-            conv.UpdatedAtUtc = DateTime.UtcNow;
-            MergeUserMemoryFromConversation(userMemoriesPath, requesterKey, conv);
-            PersistConversations(conversationsPath, conversations);
-            AppendTokenUsageLog(
-                usageLogPath,
-                new TokenUsageLog
-                {
-                    AtUtc = DateTime.UtcNow,
-                    ConversationId = conversationId,
-                    UserKey = requesterKey,
-                    Model = "fast-product",
-                    PromptTokens = 0,
-                    CompletionTokens = 0,
-                    TotalTokens = 0,
-                    LatencyMs = (long)(DateTime.UtcNow - requestStarted).TotalMilliseconds,
-                    Note = "product_fast_path"
-                });
-            return;
-        }
-
-        if (forceGptForAll && isProductQuery && !string.IsNullOrWhiteSpace(fastProductAnswer))
-        {
-            if (!sourcesBlocks.Any(x => string.Equals(x, fastProductAnswer, StringComparison.Ordinal)))
-                sourcesBlocks.Add(fastProductAnswer);
+            var normalizedFastProductAnswer = fastProductAnswer.Trim();
+            if (!sourcesBlocks.Any(x => string.Equals(x, normalizedFastProductAnswer, StringComparison.Ordinal)))
+                sourcesBlocks.Add(normalizedFastProductAnswer);
         }
         if (shortAffirmative && !string.IsNullOrWhiteSpace(effectiveRecentProductCode))
         {
@@ -460,7 +458,12 @@ internal static partial class ChatCore
                 $"FOLLOWUP_VARIANTS_REQUIRED: user_confirmed=co; product_code={effectiveRecentProductCode}; must_return=size_color_stock; do_not_ask_product_again");
         }
 
-        if (kb.Chunks.Count > 0 && !string.IsNullOrWhiteSpace(lastUser))
+        var shouldSearchKnowledgeBase =
+            kb.Chunks.Count > 0 &&
+            !string.IsNullOrWhiteSpace(lastUser) &&
+            (!isProductQuery || sourcesBlocks.Count == 0 || IsKnowledgeIntent(lastUser));
+
+        if (shouldSearchKnowledgeBase)
         {
             try
             {
@@ -507,7 +510,7 @@ internal static partial class ChatCore
         if (sourcesBlocks.Count == 0)
         {
             sourcesBlocks.Add(
-                "NO_PRELOADED_SOURCE: Không tim thấy thông tin liên quan trong tài liệu/nguồn dữ liệu của cửa hàng.");
+                "NO_PRELOADED_SOURCE: Không tìm thấy thông tin liên quan trong tài liệu/nguồn dữ liệu của cửa hàng.");
         }
 
         var baseRules =
@@ -541,9 +544,16 @@ internal static partial class ChatCore
         var usageNote = "";
         var runtimeState = new AgentRuntimeState();
         var lastKnownCode = ExtractRecentProductCode(conv);
+        var hasPreloadedProductSource = isProductQuery && !string.IsNullOrWhiteSpace(fastProductAnswer);
         Action<AgentToolCallLog> toolLogger = log => AppendAgentToolCallLog(agentToolLogPath, log);
         Action<AgentStepLog> stepLogger = log => AppendAgentStepLog(agentStepLogPath, log);
-        var plannerHint = BuildPlannerHint(lastUser);
+        var plannerHint = BuildPlannerHint(classifierProductIntent ? effectiveProductQuery : lastUser);
+        if (hasPreloadedProductSource)
+        {
+            plannerHint =
+                "Da co du lieu san pham tu he thong. Chi duoc tong hop cau tra loi tu SOURCES, " +
+                "khong goi them tool, khong bo sung san pham khong co trong SOURCES.";
+        }
         if (shortAffirmative && !string.IsNullOrWhiteSpace(effectiveRecentProductCode))
         {
             plannerHint =
@@ -559,7 +569,8 @@ internal static partial class ChatCore
             runtimeState: runtimeState,
             toolLogger: toolLogger,
             stepLogger: stepLogger,
-            plannerHint: plannerHint);
+            plannerHint: plannerHint,
+            allowToolCalls: !hasPreloadedProductSource);
 
         await SendStart(ctx, messageId);
         await SendTextStart(ctx, textId);
@@ -650,7 +661,7 @@ internal static partial class ChatCore
     {
         var cleaned = CleanUserFacingLiveText(mainContent);
         if (string.IsNullOrWhiteSpace(cleaned))
-            return "Mình không tìm thấy thông tin này trong tài liệu/nguồn dữ liệu cửa hàng.";
+            return "Mình không tìm thấy thông tin này trong tài liệu/nguồn dữ liệu của cửa hàng.";
 
         if (cleaned.EndsWith("\n", StringComparison.Ordinal))
             cleaned = cleaned.TrimEnd();
@@ -776,3 +787,4 @@ internal static partial class ChatCore
         return "Bat dau bang search_knowledge hoac search_products tuy theo y nghia cau hoi, tranh goi qua nhieu tool.";
     }
 }
+

@@ -29,7 +29,8 @@ internal static partial class ChatCore
         AgentRuntimeState RuntimeState,
         Action<AgentToolCallLog>? ToolLogger,
         Action<AgentStepLog>? StepLogger,
-        string? PlannerHint
+        string? PlannerHint,
+        bool AllowToolCalls
     );
 
     internal sealed record AgentToolExecutionContext(
